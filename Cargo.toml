@@ -6,6 +6,11 @@ edition = "2024"
 [dependencies]
 # Fenêtres et interface (egui).
 eframe = "0.37.0"
+# Audio. On désactive tout par défaut et on n'active que :
+# - "playback" : la lecture sur un périphérique audio (via cpal) ;
+# - "hound" : un décodeur WAV léger (les sons Windows sont en WAV).
+# Les autres formats (MP3, OGG) seront ajoutés à l'étape 8 avec l'import de sons.
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "hound"] }
 
 # Dépendances utilisées uniquement quand on compile pour Windows.
 [target.'cfg(windows)'.dependencies]

@@ -158,3 +158,35 @@ Projet d'essai : `RustSandbox/hello_egui/` (hors dépôt).
 - `[target.'cfg(windows)'.dependencies]` : dépendances téléchargées et compilées seulement pour Windows.
 - `#[cfg(windows)]` / `#[cfg(not(windows))]` dans le code : n'inclut un élément que sur certaines plateformes.
 - Les **features** d'une crate (`features = [...]`) n'activent que les parties utiles : moins de code compilé, exe plus léger.
+
+---
+
+## Étape 3 : le moteur audio
+
+### Drop et RAII : le nettoyage automatique
+
+- Quand une valeur n'est plus utilisée (fin de bloc, remplacement…), Rust la **détruit** automatiquement en appelant sa méthode `drop`. C'est le principe RAII : une ressource est libérée au moment exact où son propriétaire disparaît.
+- On s'en sert pour couper un son : `self.players.insert(slot, nouveau_player)` remplace l'ancien `Player`, qui est détruit, et son `drop` arrête le son. Aucun code de nettoyage à écrire.
+- À l'inverse, `MixerDeviceSink` doit rester vivant tant qu'on veut du son : on le garde donc dans un champ de la struct, même s'il semble peu utilisé.
+
+### `Option`, `Result` et l'opérateur `?`
+
+- `Result<T, E>` = succès `Ok(T)` ou erreur `Err(E)`.
+- `.ok()` convertit un `Result` en `Option` (on oublie le détail de l'erreur).
+- `?` : « si c'est une erreur / `None`, sors tout de suite de la fonction en la renvoyant ». Ça évite des cascades de `match`.
+- `.unwrap_or_else(|| ...)` : prend la valeur, ou calcule une valeur de remplacement si elle est absente (notre bip de secours).
+- `.is_some_and(|x| ...)` : « il y a une valeur ET elle vérifie la condition ».
+
+### Partage sans copie : `Arc`
+
+- `SamplesBuffer` garde ses échantillons dans un `Arc` (*Atomically Reference Counted*) : plusieurs propriétaires partagent les mêmes données, libérées quand le dernier disparaît. `clone()` ne copie donc pas les données, il incrémente juste un compteur. Jouer un son ne coûte presque rien.
+
+### Divers
+
+- `NonZero<u32>` : un entier dont le type garantit qu'il n'est pas nul.
+- `.expect("raison")` : récupère la valeur, ou fait planter avec ce message si c'est une erreur. À réserver aux cas *impossibles*, avec une raison claire.
+- `#[expect(dead_code, reason = "...")]` : on déclare qu'un élément n'est pas encore utilisé. Le compilateur se tait, puis **avertit dès qu'il devient utilisé**, pour qu'on retire l'annotation. Mieux que `#[allow]`, qui reste silencieux pour toujours.
+- Itérateur → `Vec` : un décodeur audio est un itérateur d'échantillons. `decoder.collect()` les décode tous d'un coup.
+- `(0..n).map(|i| ...).collect()` : génère une liste calculée (ici, les échantillons d'une onde sinusoïdale).
+- `#[cfg(windows)]` sur un test : ce test ne tourne que sous Windows.
+- Les noms d'import d'une crate peuvent bouger d'une version à l'autre : `rodio::SamplesBuffer` n'existe plus en 0.23, c'est `rodio::buffer::SamplesBuffer`. Le compilateur l'a signalé tout de suite (`unresolved import`).
