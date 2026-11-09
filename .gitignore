@@ -1,0 +1,8 @@
+# Dossier de compilation Rust (peut peser plusieurs Go)
+/target/
+
+# Fichiers système / éditeurs
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
