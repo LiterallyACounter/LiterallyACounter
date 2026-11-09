@@ -59,16 +59,6 @@ impl Counter {
             CounterAction::Subtract(n) => self.value = self.value.saturating_sub(n),
         }
     }
-
-    /// Raccourci pour `apply(Add(1))`.
-    pub fn increment(&mut self) {
-        self.apply(CounterAction::Add(1));
-    }
-
-    /// Raccourci pour `apply(Subtract(1))`.
-    pub fn decrement(&mut self) {
-        self.apply(CounterAction::Subtract(1));
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -91,24 +81,24 @@ mod tests {
     #[test]
     fn increment_adds_one() {
         let mut counter = Counter::default();
-        counter.increment();
-        counter.increment();
+        counter.apply(CounterAction::Add(1));
+        counter.apply(CounterAction::Add(1));
         assert_eq!(counter.value(), 2);
     }
 
     #[test]
     fn decrement_removes_one() {
         let mut counter = Counter::default();
-        counter.increment();
-        counter.increment();
-        counter.decrement();
+        counter.apply(CounterAction::Add(1));
+        counter.apply(CounterAction::Add(1));
+        counter.apply(CounterAction::Subtract(1));
         assert_eq!(counter.value(), 1);
     }
 
     #[test]
     fn decrement_never_goes_below_zero() {
         let mut counter = Counter::default();
-        counter.decrement();
+        counter.apply(CounterAction::Subtract(1));
         assert_eq!(counter.value(), 0);
     }
 

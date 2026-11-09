@@ -4,11 +4,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 // `mod xxx;` : déclare un module. Son code est dans `src/xxx.rs` ou `src/xxx/mod.rs`.
+mod audio;
 mod counter;
 mod hotkeys;
 
 use std::sync::mpsc::{self, Receiver};
 
+use audio::{AudioEngine, SoundSlot};
 use counter::{Counter, CounterAction};
 use eframe::egui;
 use hotkeys::{Key, Shortcut};
@@ -18,6 +20,20 @@ struct CounterWindow {
     counter: Counter,
     /// Bout « réception » du channel : les actions envoyées par le thread des raccourcis arrivent ici.
     actions: Receiver<CounterAction>,
+    /// Le moteur audio. `None` s'il n'y a aucune sortie audio : l'appli marche alors sans son.
+    audio: Option<AudioEngine>,
+}
+
+impl CounterWindow {
+    /// Applique une action au compteur ET joue le son correspondant.
+    /// Toutes les actions (clavier comme souris) passent par ici.
+    fn handle(&mut self, action: CounterAction) {
+        self.counter.apply(action);
+        // `if let Some(audio) = &mut self.audio` : seulement si le moteur audio existe.
+        if let Some(audio) = &mut self.audio {
+            audio.play(SoundSlot::for_action(action));
+        }
+    }
 }
 
 impl eframe::App for CounterWindow {
@@ -27,7 +43,7 @@ impl eframe::App for CounterWindow {
         // `try_recv` ne bloque pas : il renvoie `Ok(action)` s'il y en a une, une erreur sinon.
         // `while let` : boucle tant que le motif correspond (ici, tant qu'il y a des actions).
         while let Ok(action) = self.actions.try_recv() {
-            self.counter.apply(action);
+            self.handle(action);
         }
 
         // Échap : ferme la fenêtre (il n'y a plus de bouton ✕ puisqu'il n'y a plus de bordure).
@@ -66,10 +82,10 @@ impl eframe::App for CounterWindow {
             // Clic gauche : +1. Clic droit (« secondary ») : -1.
             // (Provisoire : à l'étape 7, le clic droit ouvrira un menu.)
             if response.clicked() {
-                self.counter.increment();
+                self.handle(CounterAction::Add(1));
             }
             if response.secondary_clicked() {
-                self.counter.decrement();
+                self.handle(CounterAction::Subtract(1));
             }
         });
     }
@@ -129,6 +145,7 @@ fn main() -> eframe::Result {
             Ok(Box::new(CounterWindow {
                 counter: Counter::default(),
                 actions: receiver,
+                audio: AudioEngine::new(),
             }))
         }),
     )
