@@ -66,3 +66,41 @@ Projet d'essai : `RustSandbox/hello_egui/` (hors dépôt).
 **Taille** : l'exe release fait environ 14 Mo sans aucune optimisation de taille. On la réduira à l'étape 10 (`strip`, LTO, `opt-level = "z"`, désactivation des features inutiles).
 
 **Leçon** : les bibliothèques Rust évoluent vite. En 0.37, egui a remplacé `fn update(&mut self, ctx, frame)` par `fn ui(&mut self, ui, frame)`. Le compilateur l'a signalé tout de suite, et la vraie référence, c'est le code source ou la doc de la version utilisée (`cargo doc --open`).
+
+---
+
+## Étape 1 : la fenêtre compteur
+
+### Modules
+
+- `mod counter;` dans `main.rs` déclare un module dont le code est dans `src/counter.rs`. Un module = un fichier = un sujet.
+- **Visibilité** : tout est privé par défaut. `pub` rend une struct, un champ ou une méthode accessible depuis les autres modules. Le champ `value` de `Counter` est privé : on ne peut le modifier que via `increment()` / `decrement()`, qui font respecter la règle « jamais sous 0 ».
+- `use counter::Counter;` importe la struct pour l'utiliser dans `main.rs`.
+
+### Types et méthodes
+
+- **`u64` ou `i64`** : `u` = *unsigned* (non signé, ≥ 0), `i` = *integer* signé. Choisir `u64` fait garantir « jamais négatif » par le type lui-même.
+- **`saturating_sub` / `saturating_add`** : arithmétique qui « bute » sur les limites au lieu de planter (0 - 1 = 0). En Rust, un dépassement d'entier fait planter le programme en debug : il faut choisir explicitement le comportement voulu.
+- **`impl Counter { ... }`** : on y définit les méthodes de la struct.
+- **`&self` / `&mut self`** : la méthode emprunte l'objet en lecture seule ou en modification.
+- **Valeur de retour implicite** : la dernière expression d'une fonction, *sans* `;`, est renvoyée (`self.value`).
+- **Commentaires de documentation** : `///` documente l'élément qui suit, `//!` documente le module entier. `cargo doc --open` génère une doc HTML à partir de ces commentaires.
+
+### Tests
+
+- Les tests vivent dans le même fichier, dans un module `#[cfg(test)] mod tests { ... }`, compilé uniquement par `cargo test`.
+- Chaque fonction `#[test]` est un test. `assert_eq!(obtenu, attendu)` le fait échouer si les deux diffèrent.
+- `use super::*;` importe tout le contenu du module parent dans le module de tests.
+
+### Attributs de compilation
+
+- `#![...]` (avec `!`) s'applique au fichier entier ; `#[...]` s'applique à l'élément qui suit.
+- `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` : en release seulement, l'exe est une appli graphique Windows, sans console.
+
+### egui
+
+- `ui.interact(rect, id, Sense::click_and_drag())` rend une zone sensible aux clics et au glisser. On récupère une `Response` : `.clicked()`, `.secondary_clicked()` (clic droit), `.drag_started()`.
+- `ViewportCommand::StartDrag` demande à Windows de déplacer la fenêtre, comme si on tenait la barre de titre.
+- `ViewportBuilder` : `.with_decorations(false)` (sans bordure), `.with_always_on_top()`, `.with_resizable(false)`.
+- **Les avertissements de dépréciation** (*deprecated*) signalent une API renommée : `Ui::id` → `Ui::scope_id`, `Id::new` → `Id::unique` / `IdSalt::new`. Le compilateur indique quoi utiliser à la place.
+- **Piège rencontré : ordre et superposition.** Pour egui, un élément ajouté *après* un autre est *au-dessus* et reçoit les clics en priorité. Or les labels sont sélectionnables par défaut (`selectable_labels`), donc ils captent les clics. Notre label, qui occupait toute la fenêtre, interceptait tout. Correction : `Label::new(...).selectable(false)`, et on ajoute la zone cliquable *après* le label.
