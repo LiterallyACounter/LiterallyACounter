@@ -1749,6 +1749,7 @@ name = "literally_a_counter"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
