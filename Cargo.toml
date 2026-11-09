@@ -4,4 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Fenêtres et interface (egui).
 eframe = "0.37.0"
+
+# Dépendances utilisées uniquement quand on compile pour Windows.
+[target.'cfg(windows)'.dependencies]
+# Accès direct à l'API Windows (crate officielle Microsoft) : hook clavier global.
+# Chaque « feature » active une partie de l'API ; on n'active que ce qui sert.
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_LibraryLoader",
+] }

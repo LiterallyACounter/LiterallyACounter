@@ -3,6 +3,21 @@
 //! Ce module ne connaît rien de l'affichage ni du clavier. C'est volontaire :
 //! la logique est ainsi facile à tester automatiquement (voir les tests en bas du fichier).
 
+/// Une action applicable à un compteur.
+///
+/// Un `enum` (énumération) est un type qui vaut UNE des variantes listées.
+/// Ici, chaque variante transporte une donnée : le nombre à ajouter ou à retirer.
+/// Exemple : `CounterAction::Add(5)` = « ajouter 5 ».
+///
+/// `derive` génère automatiquement :
+/// - `Clone, Copy` : l'action peut être copiée librement (c'est juste un petit nombre) ;
+/// - `PartialEq, Eq` : on peut comparer deux actions avec `==` (utile dans les tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CounterAction {
+    Add(u64),
+    Subtract(u64),
+}
+
 /// Un compteur.
 ///
 /// La valeur est un `u64` : un entier NON SIGNÉ sur 64 bits (de 0 à environ 18 milliards de milliards).
@@ -29,18 +44,30 @@ impl Counter {
         self.value
     }
 
-    /// Ajoute 1.
+    /// Applique une action au compteur.
     /// `&mut self` : on emprunte le compteur en MODIFICATION.
-    pub fn increment(&mut self) {
-        // `saturating_add` : si on dépasse le maximum possible, on reste bloqué au maximum
-        // au lieu de faire planter le programme. Impossible en pratique, mais gratuit.
-        self.value = self.value.saturating_add(1);
+    pub fn apply(&mut self, action: CounterAction) {
+        // `match` examine la valeur et exécute la branche correspondant à sa variante.
+        // Le compilateur VÉRIFIE que toutes les variantes sont traitées : si on ajoute
+        // une variante à l'enum plus tard, ce code ne compilera plus tant qu'on ne l'aura pas gérée.
+        // `Add(n)` « déballe » la variante et met le nombre transporté dans la variable `n`.
+        match action {
+            // `saturating_add` : si on dépasse le maximum possible, on reste bloqué au maximum
+            // au lieu de faire planter le programme. Impossible en pratique, mais gratuit.
+            CounterAction::Add(n) => self.value = self.value.saturating_add(n),
+            // `saturating_sub` : 0 - 1 donne 0 au lieu d'une erreur → jamais sous 0.
+            CounterAction::Subtract(n) => self.value = self.value.saturating_sub(n),
+        }
     }
 
-    /// Retire 1, sans jamais descendre sous 0.
+    /// Raccourci pour `apply(Add(1))`.
+    pub fn increment(&mut self) {
+        self.apply(CounterAction::Add(1));
+    }
+
+    /// Raccourci pour `apply(Subtract(1))`.
     pub fn decrement(&mut self) {
-        // `saturating_sub` : 0 - 1 donne 0 au lieu d'une erreur.
-        self.value = self.value.saturating_sub(1);
+        self.apply(CounterAction::Subtract(1));
     }
 }
 
@@ -82,6 +109,23 @@ mod tests {
     fn decrement_never_goes_below_zero() {
         let mut counter = Counter::default();
         counter.decrement();
+        assert_eq!(counter.value(), 0);
+    }
+
+    #[test]
+    fn add_n_and_subtract_n() {
+        let mut counter = Counter::default();
+        counter.apply(CounterAction::Add(5));
+        assert_eq!(counter.value(), 5);
+        counter.apply(CounterAction::Subtract(2));
+        assert_eq!(counter.value(), 3);
+    }
+
+    #[test]
+    fn subtract_n_never_goes_below_zero() {
+        let mut counter = Counter::default();
+        counter.apply(CounterAction::Add(3));
+        counter.apply(CounterAction::Subtract(10));
         assert_eq!(counter.value(), 0);
     }
 }

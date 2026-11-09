@@ -3,21 +3,33 @@
 // donc SANS console noire derrière. En debug, on garde la console pour voir les messages.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-// `mod counter;` : déclare le module `counter`, dont le code est dans `src/counter.rs`.
+// `mod xxx;` : déclare un module. Son code est dans `src/xxx.rs` ou `src/xxx/mod.rs`.
 mod counter;
+mod hotkeys;
 
-use counter::Counter;
+use std::sync::mpsc::{self, Receiver};
+
+use counter::{Counter, CounterAction};
 use eframe::egui;
+use hotkeys::{Key, Shortcut};
 
 /// L'état de l'application : pour l'instant, un seul compteur.
-#[derive(Default)]
 struct CounterWindow {
     counter: Counter,
+    /// Bout « réception » du channel : les actions envoyées par le thread des raccourcis arrivent ici.
+    actions: Receiver<CounterAction>,
 }
 
 impl eframe::App for CounterWindow {
     // Appelée à chaque image affichée.
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // On applique toutes les actions reçues du clavier depuis la dernière image.
+        // `try_recv` ne bloque pas : il renvoie `Ok(action)` s'il y en a une, une erreur sinon.
+        // `while let` : boucle tant que le motif correspond (ici, tant qu'il y a des actions).
+        while let Ok(action) = self.actions.try_recv() {
+            self.counter.apply(action);
+        }
+
         // Échap : ferme la fenêtre (il n'y a plus de bouton ✕ puisqu'il n'y a plus de bordure).
         // `ui.input(|i| ...)` lit l'état du clavier et de la souris pour cette image.
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -63,6 +75,28 @@ impl eframe::App for CounterWindow {
     }
 }
 
+/// Raccourcis codés en dur pour l'étape 2 (ils deviendront configurables à l'étape 7).
+fn default_shortcuts() -> Vec<Shortcut> {
+    // `vec![...]` : macro qui crée un `Vec` avec les éléments donnés.
+    vec![
+        Shortcut {
+            held: vec![],
+            trigger: Key::NUMPAD_ADD,
+            action: CounterAction::Add(1),
+        },
+        Shortcut {
+            held: vec![],
+            trigger: Key::NUMPAD_SUBTRACT,
+            action: CounterAction::Subtract(1),
+        },
+        Shortcut {
+            held: vec![Key::CONTROL],
+            trigger: Key::NUMPAD_ADD,
+            action: CounterAction::Add(5),
+        },
+    ]
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -77,6 +111,25 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Literally A Counter",
         options,
-        Box::new(|_cc| Ok(Box::new(CounterWindow::default()))),
+        // `cc` (« creation context ») donne accès au contexte egui au démarrage.
+        Box::new(|cc| {
+            // Un CHANNEL : un tuyau entre threads. `sender` envoie, `receiver` reçoit.
+            let (sender, receiver) = mpsc::channel();
+            // Le contexte egui, pour pouvoir réveiller l'interface depuis le thread des raccourcis.
+            // `clone()` : on en fait une copie (c'est en fait un pointeur partagé, la copie est légère).
+            let ctx = cc.egui_ctx.clone();
+
+            hotkeys::start(default_shortcuts(), move |action| {
+                // `let _ =` : on ignore volontairement le résultat (échec seulement si l'appli est fermée).
+                let _ = sender.send(action);
+                // Sans le focus, egui ne redessine pas tout seul : on le réveille.
+                ctx.request_repaint();
+            });
+
+            Ok(Box::new(CounterWindow {
+                counter: Counter::default(),
+                actions: receiver,
+            }))
+        }),
     )
 }

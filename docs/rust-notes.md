@@ -104,3 +104,57 @@ Projet d'essai : `RustSandbox/hello_egui/` (hors dépôt).
 - `ViewportBuilder` : `.with_decorations(false)` (sans bordure), `.with_always_on_top()`, `.with_resizable(false)`.
 - **Les avertissements de dépréciation** (*deprecated*) signalent une API renommée : `Ui::id` → `Ui::scope_id`, `Id::new` → `Id::unique` / `IdSalt::new`. Le compilateur indique quoi utiliser à la place.
 - **Piège rencontré : ordre et superposition.** Pour egui, un élément ajouté *après* un autre est *au-dessus* et reçoit les clics en priorité. Or les labels sont sélectionnables par défaut (`selectable_labels`), donc ils captent les clics. Notre label, qui occupait toute la fenêtre, interceptait tout. Correction : `Label::new(...).selectable(false)`, et on ajoute la zone cliquable *après* le label.
+
+---
+
+## Étape 2 : le hook clavier global
+
+### Enums et `match`
+
+- **`enum CounterAction { Add(u64), Subtract(u64) }`** : une valeur qui est *une* des variantes, chaque variante pouvant transporter des données.
+- **`match`** traite chaque variante. Le compilateur vérifie qu'**aucun cas n'est oublié** : si on ajoute une variante, tous les `match` concernés refusent de compiler jusqu'à ce qu'on la gère.
+- `_ => {}` : le cas « tout le reste ».
+
+### `Option` : pas de `null` en Rust
+
+- `Option<T>` vaut `Some(valeur)` ou `None`. L'absence de valeur est explicite, et on est obligé de traiter le cas `None`.
+- `let Some(x) = ... else { return ...; };` : extrait la valeur, ou sort de la fonction si c'est `None`.
+- `if let Some(x) = ... { ... }` : exécute le bloc seulement s'il y a une valeur.
+- `while let Ok(x) = ... { ... }` : boucle tant que le motif correspond.
+
+### Collections et itérateurs
+
+- `Vec<T>` : tableau de taille variable (`vec![a, b, c]` pour en créer un).
+- `HashSet<T>` : ensemble sans doublons, recherche rapide. `insert` renvoie `false` si l'élément y était déjà (on s'en sert pour détecter la répétition d'une touche).
+- **Chaînes d'itérateurs** : `.iter().filter(...).map(...).collect()` parcourt, filtre, transforme et rassemble, sans boucle écrite à la main. `.all(...)`, `.max()`, `.retain(...)` sont du même genre.
+
+### Newtype et constantes associées
+
+- `struct Key(pub u16);` enveloppe un nombre dans un type dédié : impossible de confondre une touche avec un autre nombre.
+- `impl Key { pub const NUMPAD_ADD: Key = Key(0x6B); }` : constantes rangées « dans » le type → `Key::NUMPAD_ADD`.
+
+### Fonctions en paramètre et closures
+
+- `impl Fn(Key) -> bool` : « n'importe quelle fonction qui prend une `Key` et renvoie un `bool` ». Pratique pour les tests : on passe `|_| false` pour simuler le système.
+- `Box<dyn Fn(CounterAction)>` : une fonction quelconque de cette forme, rangée dans le tas (quand on doit la *stocker*).
+- `move |...| { ... }` : la closure **prend possession** des variables qu'elle utilise (nécessaire pour les emporter dans un autre thread).
+
+### Threads et channels
+
+- `std::thread::spawn` (ou `Builder::new().spawn`) lance un fil d'exécution parallèle.
+- `mpsc::channel()` crée un tuyau : `sender.send(x)` d'un côté, `receiver.try_recv()` de l'autre (`try_` = sans attendre).
+- **`Send` et `'static`** : le compilateur vérifie qu'une donnée envoyée à un autre thread peut l'être sans risque. C'est ce qui rend les bugs de concurrence (*data races*) impossibles en Rust « sûr ».
+- `thread_local!` : une variable propre à chaque thread. On s'en sert parce que Windows appelle notre `hook_proc` sans nous laisser lui passer de données.
+- `RefCell` : permet de modifier une valeur partagée, avec une vérification *à l'exécution* au lieu de la compilation.
+
+### `unsafe` et FFI (appel de code C)
+
+- L'API Windows est en C. Rust ne peut pas vérifier ce code, donc chaque appel est dans un bloc `unsafe { ... }`, où le programmeur garantit lui-même la correction.
+- Bonne pratique : des blocs `unsafe` **minuscules**, chacun avec un commentaire `SÉCURITÉ :` qui explique pourquoi c'est correct, et tout le reste du code en Rust sûr.
+- `unsafe extern "system" fn` : une fonction que Windows peut appeler (convention d'appel « system »).
+
+### Cargo : dépendances par plateforme
+
+- `[target.'cfg(windows)'.dependencies]` : dépendances téléchargées et compilées seulement pour Windows.
+- `#[cfg(windows)]` / `#[cfg(not(windows))]` dans le code : n'inclut un élément que sur certaines plateformes.
+- Les **features** d'une crate (`features = [...]`) n'activent que les parties utiles : moins de code compilé, exe plus léger.
