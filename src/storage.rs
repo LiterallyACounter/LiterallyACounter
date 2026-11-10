@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::display::DisplayStyle;
+use crate::hotkeys::{self, Shortcut};
 
 const APP_FOLDER: &str = "LiterallyACounter";
 const STATE_FILE: &str = "state.json";
@@ -47,6 +48,8 @@ pub struct SavedState {
     /// Fenêtres ouvertes (leur position n'est pas sauvegardée).
     pub show_global: bool,
     pub show_round: bool,
+    /// Les raccourcis. Les touches sont écrites avec leur code Windows (par ex. 107 = Num +).
+    pub shortcuts: Vec<Shortcut>,
 }
 
 // Valeurs par défaut écrites à la main : les booléens doivent valoir `true` (le `derive`
@@ -62,6 +65,7 @@ impl Default for SavedState {
             round_copies_global: true,
             show_global: true,
             show_round: true,
+            shortcuts: hotkeys::default_shortcuts(),
         }
     }
 }
@@ -195,6 +199,8 @@ mod tests {
         // Le reste prend les valeurs par défaut : copie activée, deux fenêtres ouvertes.
         assert!(state.round_copies_global);
         assert!(state.show_global && state.show_round);
+        // Pas de raccourcis dans l'ancien fichier : ceux par défaut.
+        assert_eq!(state.shortcuts, hotkeys::default_shortcuts());
         let _ = fs::remove_dir_all(&dir);
     }
 

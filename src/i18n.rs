@@ -7,10 +7,9 @@
 //! - le nom d'une touche est calculé à partir de la touche RÉELLEMENT configurée, et traduit lui
 //!   aussi. Si on change la touche, tous les messages qui la citent suivent automatiquement.
 
-use crate::command::Command;
-use crate::counter::CounterAction;
+use crate::command::CommandKind;
 use crate::hotkeys::{Key, Shortcut};
-use crate::tracker::CounterId;
+use crate::tracker::Targets;
 
 /// La langue de l'interface. Elle sera détectée et réglable à l'étape 10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,16 +81,6 @@ pub enum Text {
     GoalReachedColor,
     /// Couleur des alertes.
     AlertColor,
-    /// Information de l'onglet raccourcis (provisoire).
-    ShortcutsInfo,
-    /// En-tête de colonne.
-    ColumnAction,
-    /// En-tête de colonne.
-    ColumnShortcut,
-    /// Action « ajouter ». Emplacements : `{n}` (quantité), `{target}` (compteurs visés).
-    ActionAdd,
-    /// Action « retirer ». Mêmes emplacements.
-    ActionSubtract,
     /// Compteurs visés : les deux.
     TargetBoth,
     /// Compteurs visés : le global.
@@ -106,6 +95,28 @@ pub enum Text {
     ActionConfirmReset,
     /// Action annuler le reset.
     ActionUndoReset,
+    /// Aide de l'onglet raccourcis.
+    ShortcutsHelp,
+    /// Capture en cours.
+    PressShortcut,
+    /// Refus d'un clic gauche/droit seul.
+    MainClickNeedsModifier,
+    /// Avertissement de conflit.
+    ShortcutConflict,
+    /// Bouton de remise à zéro des raccourcis.
+    RestoreDefaultShortcuts,
+    /// Infobulle du bouton ＋.
+    AddShortcut,
+    /// Infobulle du bouton ✕.
+    RemoveShortcut,
+    /// Ligne +1.
+    ActionAdd1,
+    /// Ligne −1.
+    ActionSubtract1,
+    /// Ligne +5.
+    ActionAdd5,
+    /// Ligne −5.
+    ActionSubtract5,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -172,18 +183,6 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::GoalReachedColor, Language::English) => "Goal reached",
         (Text::AlertColor, Language::French) => "Alertes (« Reset ? »)",
         (Text::AlertColor, Language::English) => "Alerts (\"Reset?\")",
-        (Text::ShortcutsInfo, Language::French) => {
-            "Vue d'ensemble. La modification des raccourcis arrive à l'étape 8b."
-        }
-        (Text::ShortcutsInfo, Language::English) => "Overview. Editing shortcuts comes in step 8b.",
-        (Text::ColumnAction, Language::French) => "Action",
-        (Text::ColumnAction, Language::English) => "Action",
-        (Text::ColumnShortcut, Language::French) => "Raccourci",
-        (Text::ColumnShortcut, Language::English) => "Shortcut",
-        (Text::ActionAdd, Language::French) => "+{n} ({target})",
-        (Text::ActionAdd, Language::English) => "+{n} ({target})",
-        (Text::ActionSubtract, Language::French) => "−{n} ({target})",
-        (Text::ActionSubtract, Language::English) => "−{n} ({target})",
         (Text::TargetBoth, Language::French) => "global et partie",
         (Text::TargetBoth, Language::English) => "total and round",
         (Text::TargetGlobal, Language::French) => "global",
@@ -198,6 +197,42 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::ActionConfirmReset, Language::English) => "Confirm the reset",
         (Text::ActionUndoReset, Language::French) => "Annuler le dernier reset",
         (Text::ActionUndoReset, Language::English) => "Undo the last reset",
+        (Text::ShortcutsHelp, Language::French) => {
+            "Clique sur un raccourci pour le changer, ou sur + pour en ajouter. Appuie sur les touches voulues : la combinaison est enregistrée au premier relâchement."
+        }
+        (Text::ShortcutsHelp, Language::English) => {
+            "Click a shortcut to change it, or + to add one. Press the keys you want: the combination is saved when you release the first key."
+        }
+        (Text::PressShortcut, Language::French) => {
+            "Appuie sur la combinaison… (Échap pour annuler)"
+        }
+        (Text::PressShortcut, Language::English) => "Press the combination… (Esc to cancel)",
+        (Text::MainClickNeedsModifier, Language::French) => {
+            "Clic gauche ou droit : ajoute Ctrl, Maj ou Alt, sinon il se déclencherait à chaque tir ou visée en jeu."
+        }
+        (Text::MainClickNeedsModifier, Language::English) => {
+            "Left or right click: add Ctrl, Shift or Alt, otherwise it would trigger on every shot or aim in game."
+        }
+        (Text::ShortcutConflict, Language::French) => {
+            "Cette combinaison sert aussi à une autre action : les deux se déclencheront ensemble."
+        }
+        (Text::ShortcutConflict, Language::English) => {
+            "This combination is also used by another action: both will trigger together."
+        }
+        (Text::RestoreDefaultShortcuts, Language::French) => "Rétablir les raccourcis par défaut",
+        (Text::RestoreDefaultShortcuts, Language::English) => "Restore default shortcuts",
+        (Text::AddShortcut, Language::French) => "Ajouter un raccourci",
+        (Text::AddShortcut, Language::English) => "Add a shortcut",
+        (Text::RemoveShortcut, Language::French) => "Supprimer ce raccourci",
+        (Text::RemoveShortcut, Language::English) => "Remove this shortcut",
+        (Text::ActionAdd1, Language::French) => "+1",
+        (Text::ActionAdd1, Language::English) => "+1",
+        (Text::ActionSubtract1, Language::French) => "−1",
+        (Text::ActionSubtract1, Language::English) => "−1",
+        (Text::ActionAdd5, Language::French) => "+5",
+        (Text::ActionAdd5, Language::English) => "+5",
+        (Text::ActionSubtract5, Language::French) => "−5",
+        (Text::ActionSubtract5, Language::English) => "−5",
     }
 }
 
@@ -274,37 +309,37 @@ pub fn shortcut_name(shortcut: &Shortcut, language: Language) -> String {
         .join(" + ")
 }
 
-/// Le nom d'une commande, par ex. « +1 (global et partie) » ou « Reset du global ».
-pub fn command_name(command: Command, language: Language) -> String {
-    match command {
-        Command::Count(targets, action) => {
-            let target = match (targets.global, targets.round) {
-                (true, true) => Text::TargetBoth,
-                (true, false) => Text::TargetGlobal,
-                // `_` : les autres cas (partie seule ; « aucun » n'existe pas en pratique).
-                _ => Text::TargetRound,
-            };
-            let (template, n) = match action {
-                CounterAction::Add(n) => (Text::ActionAdd, n),
-                CounterAction::Subtract(n) => (Text::ActionSubtract, n),
-            };
-            message(
-                template,
-                language,
-                &[("n", &n.to_string()), ("target", &text(target, language))],
-            )
-        }
-        Command::Reset(CounterId::Global) => text(Text::ActionResetGlobal, language),
-        Command::Reset(CounterId::Round) => text(Text::ActionResetRound, language),
-        Command::ConfirmReset => text(Text::ActionConfirmReset, language),
-        Command::UndoReset => text(Text::ActionUndoReset, language),
-    }
+/// Le nom d'une ligne du tableau des raccourcis (« +1 », « Reset du global »…).
+pub fn command_kind_name(kind: CommandKind, language: Language) -> String {
+    let text_id = match kind {
+        CommandKind::Add1 => Text::ActionAdd1,
+        CommandKind::Subtract1 => Text::ActionSubtract1,
+        CommandKind::Add5 => Text::ActionAdd5,
+        CommandKind::Subtract5 => Text::ActionSubtract5,
+        CommandKind::ResetRound => Text::ActionResetRound,
+        CommandKind::ResetGlobal => Text::ActionResetGlobal,
+        CommandKind::ConfirmReset => Text::ActionConfirmReset,
+        CommandKind::UndoReset => Text::ActionUndoReset,
+    };
+    text(text_id, language)
+}
+
+/// Le nom des compteurs visés (« global et partie », « global », « partie »).
+pub fn targets_name(targets: Targets, language: Language) -> String {
+    let text_id = match (targets.global, targets.round) {
+        (true, true) => Text::TargetBoth,
+        (true, false) => Text::TargetGlobal,
+        // `_` : les autres cas (partie seule ; « aucun » n'existe pas en pratique).
+        _ => Text::TargetRound,
+    };
+    text(text_id, language)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracker::Targets;
+    use crate::command::Command;
+    use crate::tracker::CounterId;
 
     #[test]
     fn reset_prompt_uses_the_configured_key() {
@@ -349,22 +384,6 @@ mod tests {
         assert_eq!(
             shortcut_name(&shortcut, Language::French),
             "Ctrl + Clic molette"
-        );
-    }
-
-    #[test]
-    fn command_names() {
-        let plus_both = Command::Count(Targets::BOTH, CounterAction::Add(1));
-        assert_eq!(
-            command_name(plus_both, Language::French),
-            "+1 (global et partie)"
-        );
-        let minus_round =
-            Command::Count(Targets::only(CounterId::Round), CounterAction::Subtract(5));
-        assert_eq!(command_name(minus_round, Language::English), "−5 (round)");
-        assert_eq!(
-            command_name(Command::Reset(CounterId::Global), Language::French),
-            "Reset du global"
         );
     }
 

@@ -24,10 +24,11 @@ use std::time::{Duration, Instant};
 
 use audio::AudioEngine;
 use command::Command;
+use config_window::{CaptureRefused, CaptureTarget, ShortcutRequest};
 use counter::{Counter, CounterAction};
 use display::DisplayStyle;
 use eframe::egui;
-use hotkeys::{Key, Shortcut};
+use hotkeys::{Control, HotkeyEvent, HotkeyHandle, Key, Shortcut};
 use i18n::{Language, Text};
 use native_window::NativeWindow;
 use storage::SavedState;
@@ -102,8 +103,11 @@ impl CounterWindow {
 /// la réduire retarderait l'affichage ET le son de chaque appui sur une touche.
 struct App {
     tracker: Tracker,
-    /// Bout « réception » du channel : les commandes envoyées par le thread des raccourcis arrivent ici.
-    commands: Receiver<Command>,
+    /// Bout « réception » du channel : les événements du thread des raccourcis arrivent ici
+    /// (raccourci déclenché, capture terminée…).
+    events: Receiver<HotkeyEvent>,
+    /// Le moyen de piloter le thread des raccourcis (`None` s'il n'a pas pu démarrer).
+    hotkeys: Option<HotkeyHandle>,
     /// Le moteur audio. `None` s'il n'y a aucune sortie audio : l'appli marche alors sans son.
     audio: Option<AudioEngine>,
     /// Affichage du global.
@@ -117,8 +121,12 @@ struct App {
     windows: [CounterWindow; 2],
     /// Nom de la touche de validation, tiré des raccourcis configurés (ex. « Num Entrée »).
     confirm_key_name: String,
-    /// Les raccourcis actifs (pour la vue d'ensemble de la configuration).
+    /// Les raccourcis (modifiables dans la configuration).
     shortcuts: Vec<Shortcut>,
+    /// Capture d'un raccourci en cours.
+    capture: Option<CaptureTarget>,
+    /// Message affiché après une capture refusée.
+    capture_error: Option<String>,
     /// L'onglet affiché dans la configuration.
     tab: ConfigTab,
     /// Un réglage a changé et n'est pas encore sauvegardé. On attend que le bouton de la souris
@@ -173,6 +181,7 @@ impl App {
             round_copies_global: self.round_copies_global,
             show_global: global.visible,
             show_round: round.visible,
+            shortcuts: self.shortcuts.clone(),
         };
         if let Err(error) = storage::save(path, &state) {
             eprintln!("Sauvegarde impossible : {error}");
@@ -256,7 +265,15 @@ impl App {
                         }
                     }
                     ConfigTab::Shortcuts => {
-                        config_window::shortcuts_overview(ui, &self.shortcuts);
+                        let request = config_window::shortcuts_editor(
+                            ui,
+                            &self.shortcuts,
+                            self.capture,
+                            self.capture_error.as_deref(),
+                        );
+                        if let Some(request) = request {
+                            self.on_shortcut_request(request);
+                        }
                     }
                 });
             });
@@ -327,6 +344,64 @@ impl App {
             }
         }
         changed
+    }
+
+    /// Exécute une demande de l'onglet Raccourcis.
+    fn on_shortcut_request(&mut self, request: ShortcutRequest) {
+        // Toute nouvelle action efface le message d'un refus précédent.
+        self.capture_error = None;
+        match request {
+            ShortcutRequest::StartCapture(target) => {
+                self.capture = Some(target);
+                self.send_to_hotkeys(Control::StartCapture);
+            }
+            ShortcutRequest::CancelCapture => {
+                self.capture = None;
+                self.send_to_hotkeys(Control::CancelCapture);
+            }
+            ShortcutRequest::Remove(index) => {
+                self.shortcuts.remove(index);
+                self.shortcuts_changed();
+            }
+            ShortcutRequest::SetTargets(index, targets) => {
+                if let Command::Count(_, action) = self.shortcuts[index].command {
+                    self.shortcuts[index].command = Command::Count(targets, action);
+                    self.shortcuts_changed();
+                }
+            }
+            ShortcutRequest::RestoreDefaults => {
+                self.shortcuts = hotkeys::default_shortcuts();
+                self.shortcuts_changed();
+            }
+        }
+    }
+
+    /// Une capture est terminée : on enregistre la combinaison (ou on explique le refus).
+    fn on_captured(&mut self, held: Vec<Key>, trigger: Key) {
+        // `take()` : la capture est finie, on récupère sa cible et on laisse `None`.
+        let Some(target) = self.capture.take() else {
+            return;
+        };
+        match config_window::apply_capture(&mut self.shortcuts, target, held, trigger) {
+            Ok(()) => self.shortcuts_changed(),
+            Err(CaptureRefused::MainClickNeedsModifier) => {
+                self.capture_error = Some(i18n::text(Text::MainClickNeedsModifier, LANGUAGE));
+            }
+        }
+    }
+
+    /// Après toute modification des raccourcis : le thread du hook reçoit la nouvelle liste,
+    /// le message « Reset ? » suit la touche de validation, et on sauvegarde.
+    fn shortcuts_changed(&mut self) {
+        self.send_to_hotkeys(Control::SetShortcuts(self.shortcuts.clone()));
+        self.confirm_key_name = confirm_key_name(&self.shortcuts);
+        self.save_state();
+    }
+
+    fn send_to_hotkeys(&self, control: Control) {
+        if let Some(hotkeys) = &self.hotkeys {
+            hotkeys.send(control);
+        }
     }
 
     /// Où ouvrir la fenêtre n° `index` : à côté des fenêtres déjà ouvertes, sans les chevaucher.
@@ -609,11 +684,15 @@ impl eframe::App for App {
         // emprunter `ui` pendant qu'on appelle des méthodes qui modifient `self`.
         let ctx = ui.ctx().clone();
 
-        // On exécute toutes les commandes reçues depuis la dernière image.
-        // `try_recv` ne bloque pas : il renvoie `Ok(commande)` s'il y en a une, une erreur sinon.
-        // `while let` : boucle tant que le motif correspond (ici, tant qu'il y a des commandes).
-        while let Ok(command) = self.commands.try_recv() {
-            self.handle(command, now, &ctx);
+        // On traite tous les événements reçus depuis la dernière image.
+        // `try_recv` ne bloque pas : il renvoie `Ok(événement)` s'il y en a un, une erreur sinon.
+        // `while let` : boucle tant que le motif correspond (ici, tant qu'il y a des événements).
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                HotkeyEvent::Command(command) => self.handle(command, now, &ctx),
+                HotkeyEvent::Captured { held, trigger } => self.on_captured(held, trigger),
+                HotkeyEvent::CaptureCancelled => self.capture = None,
+            }
         }
 
         self.main_window(&ctx);
@@ -623,72 +702,33 @@ impl eframe::App for App {
     }
 }
 
-/// Raccourcis codés en dur pour l'instant (ils deviendront configurables à l'étape 8).
-fn default_shortcuts() -> Vec<Shortcut> {
-    // Petite fonction locale pour alléger l'écriture de la liste.
-    fn shortcut(held: &[Key], trigger: Key, command: Command) -> Shortcut {
-        Shortcut {
-            // `to_vec()` : copie la tranche dans un nouveau `Vec`.
-            held: held.to_vec(),
-            trigger,
-            command,
-        }
-    }
-    // Les commandes « compter » visent les DEUX compteurs (partie + global), spec M2 / M3.
-    let both = |action| Command::Count(Targets::BOTH, action);
-    // `vec![...]` : macro qui crée un `Vec` avec les éléments donnés.
-    vec![
-        shortcut(&[], Key::NUMPAD_ADD, both(CounterAction::Add(1))),
-        shortcut(&[], Key::NUMPAD_SUBTRACT, both(CounterAction::Subtract(1))),
-        shortcut(
-            &[Key::CONTROL],
-            Key::NUMPAD_ADD,
-            both(CounterAction::Add(5)),
-        ),
-        shortcut(&[], Key::NUMPAD_0, Command::Reset(CounterId::Round)),
-        shortcut(
-            &[Key::CONTROL],
-            Key::NUMPAD_0,
-            Command::Reset(CounterId::Global),
-        ),
-        shortcut(&[], Key::NUMPAD_ENTER, Command::ConfirmReset),
-        shortcut(&[Key::CONTROL], Key::NUMPAD_DECIMAL, Command::UndoReset),
-        // Souris (étape 6).
-        shortcut(
-            &[Key::CONTROL],
-            Key::MOUSE_MIDDLE,
-            both(CounterAction::Add(1)),
-        ),
-        shortcut(&[], Key::MOUSE_X2, both(CounterAction::Add(1))),
-        shortcut(&[], Key::MOUSE_X1, both(CounterAction::Subtract(1))),
-    ]
+/// Le nom de la touche de validation du reset, TIRÉ DES RACCOURCIS : si on la change,
+/// le message « Reset ? » suit. `.find(...)` : le premier raccourci qui valide un reset.
+fn confirm_key_name(shortcuts: &[Shortcut]) -> String {
+    shortcuts
+        .iter()
+        .find(|s| s.command == Command::ConfirmReset)
+        .map(|s| i18n::shortcut_name(s, LANGUAGE))
+        .unwrap_or_else(|| "?".into())
 }
 
 fn main() -> eframe::Result {
-    // On écarte les raccourcis non autorisés (clic gauche / droit sans touche de modification).
+    // On relit la sauvegarde (valeur du global, styles, fenêtres ouvertes, raccourcis).
+    let state_path = storage::state_path();
+    let saved = state_path.as_deref().map(storage::load).unwrap_or_default();
+
+    // On écarte les raccourcis non autorisés (clic gauche / droit sans touche de modification),
+    // au cas où la sauvegarde aurait été modifiée à la main.
     // `partition` : sépare une liste en deux selon une condition (autorisés / refusés).
-    let (shortcuts, refused): (Vec<_>, Vec<_>) = default_shortcuts()
-        .into_iter()
-        .partition(Shortcut::is_allowed);
+    let (shortcuts, refused): (Vec<_>, Vec<_>) =
+        saved.shortcuts.into_iter().partition(Shortcut::is_allowed);
     for shortcut in &refused {
         eprintln!(
             "Raccourci ignoré (clic gauche/droit sans Ctrl, Maj ou Alt) : {}",
             i18n::shortcut_name(shortcut, LANGUAGE)
         );
     }
-    // Le nom de la touche de validation est TIRÉ DES RACCOURCIS : si on la change, le message suit.
-    // `.find(...)` : le premier raccourci qui valide un reset (`None` s'il n'y en a pas).
-    let confirm_key_name = shortcuts
-        .iter()
-        .find(|s| s.command == Command::ConfirmReset)
-        .map(|s| i18n::shortcut_name(s, LANGUAGE))
-        .unwrap_or_else(|| "?".into());
-
-    // On relit la sauvegarde (valeur du global, styles, fenêtres ouvertes).
-    // POUR TESTER un autre style : modifie `global_style` / `round_style` dans le fichier
-    // %APPDATA%\LiterallyACounter\state.json, appli fermée.
-    let state_path = storage::state_path();
-    let saved = state_path.as_deref().map(storage::load).unwrap_or_default();
+    let confirm_key_name = confirm_key_name(&shortcuts);
 
     // La fenêtre hôte (racine) : 1 pixel transparent, qui laisse passer les clics,
     // hors de la barre des tâches, et qui ne prend pas le focus.
@@ -720,6 +760,11 @@ fn main() -> eframe::Result {
         options,
         // `cc` (« creation context ») donne accès au contexte egui au démarrage.
         Box::new(move |cc| {
+            // egui zoome l'interface avec Ctrl + « - » / « + », y compris ceux du pavé numérique :
+            // nos raccourcis Ctrl + Num ± rétréciraient la configuration quand elle a le focus.
+            cc.egui_ctx
+                .options_mut(|options| options.zoom_with_keyboard = false);
+
             // L'hôte : sans décorations Windows 11, et absent d'Alt + Tab.
             if let Some(host) = NativeWindow::from_window(cc) {
                 host.remove_decorations();
@@ -731,11 +776,10 @@ fn main() -> eframe::Result {
             // Le contexte egui, pour pouvoir réveiller l'interface depuis le thread des raccourcis.
             let ctx = cc.egui_ctx.clone();
 
-            // Une copie des raccourcis pour la configuration : l'original part dans le thread.
-            let shortcuts_overview = shortcuts.clone();
-            hotkeys::start(shortcuts, move |command| {
+            // Une copie des raccourcis part dans le thread ; l'appli garde l'original.
+            let hotkeys = hotkeys::start(shortcuts.clone(), move |event| {
                 // `let _ =` : on ignore volontairement le résultat (échec seulement si l'appli est fermée).
-                let _ = sender.send(command);
+                let _ = sender.send(event);
                 // Sans le focus, egui ne redessine pas tout seul : on le réveille.
                 ctx.request_repaint();
             });
@@ -746,7 +790,8 @@ fn main() -> eframe::Result {
                     // La partie repart TOUJOURS de 0 (sa valeur n'est jamais sauvegardée).
                     Counter::new(0, saved.round_goal),
                 ),
-                commands: receiver,
+                events: receiver,
+                hotkeys,
                 audio: AudioEngine::new(),
                 windows: [
                     CounterWindow::new(CounterId::Global, saved.show_global),
@@ -756,7 +801,9 @@ fn main() -> eframe::Result {
                 round_style: saved.round_style,
                 round_copies_global: saved.round_copies_global,
                 confirm_key_name,
-                shortcuts: shortcuts_overview,
+                shortcuts,
+                capture: None,
+                capture_error: None,
                 tab: ConfigTab::Counters,
                 unsaved_changes: false,
                 state_path,

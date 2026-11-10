@@ -17,7 +17,7 @@ use crate::reset::ResetConfirmation;
 ///
 /// Un enum SANS donnée sert ici d'identifiant : impossible de désigner un compteur
 /// qui n'existe pas (contrairement à un numéro, qui pourrait valoir 7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CounterId {
     /// Compteur persistant (sauvegardé, reset avec confirmation).
     Global,
@@ -34,7 +34,7 @@ impl CounterId {
 ///
 /// Deux booléens plutôt qu'une liste : la struct reste `Copy` (copiable librement,
 /// comme un nombre), et on ne peut pas citer deux fois le même compteur.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Targets {
     pub global: bool,
     pub round: bool,

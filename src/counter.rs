@@ -12,7 +12,7 @@
 /// `derive` génère automatiquement :
 /// - `Clone, Copy` : l'action peut être copiée librement (c'est juste un petit nombre) ;
 /// - `PartialEq, Eq` : on peut comparer deux actions avec `==` (utile dans les tests).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CounterAction {
     Add(u64),
     Subtract(u64),
