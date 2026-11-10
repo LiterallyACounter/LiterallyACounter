@@ -283,3 +283,50 @@ Projet d'essai : `RustSandbox/hello_egui/` (hors dépôt).
 - **Fins de ligne** : Git sous Windows convertit les fichiers en CRLF. Un remplacement de texte qui cherche des `\n` seuls échoue alors en silence. À garder en tête pour les scripts.
 - **Retirer un style de fenêtre** : `GetWindowLongW(hwnd, GWL_STYLE)` lit le style (un ensemble de bits), `SetWindowLongW` l'écrit. `(style & !(WS_CAPTION | WS_THICKFRAME)) | WS_POPUP` : `& !X` éteint les bits de X, `| Y` allume ceux de Y. Une fenêtre sans `WS_CAPTION` ne peut plus jamais afficher de barre de titre (fini le flash au démarrage).
 - **`WM_STYLECHANGING`** : Windows prévient *avant* tout changement de style, avec un pointeur vers le futur style (`STYLESTRUCT`), qu'on peut modifier. On s'en sert pour empêcher winit de remettre la barre de titre. `&mut *(lparam as *mut STYLESTRUCT)` : on transforme le pointeur brut en référence modifiable (dans un bloc `unsafe`).
+
+---
+
+## Étape 6 : raccourcis souris
+
+### Itérateurs : quelques outils de plus
+
+- `flat_map(|s| ...)` : pour chaque élément, produit **plusieurs** éléments, mis bout à bout en une seule suite. Ici, chaque raccourci donne toutes ses touches (`held` + `trigger`).
+- `.filter(|key| key.is_mouse())` puis `.collect()` : ne garde que les boutons de souris.
+- `sort_by_key(...)` puis `dedup()` : `dedup` ne retire que les doublons **consécutifs**, d'où le tri juste avant.
+- `partition(Shortcut::is_allowed)` : sépare une liste en deux (`(autorisés, refusés)`) selon une condition. On peut passer directement une méthode (`Shortcut::is_allowed`) au lieu d'écrire une closure.
+- `.any(|key| key.is_modifier())` : vrai si au moins un élément vérifie la condition.
+- `matches!(valeur, A | B | C)` : vrai si la valeur correspond à l'un des motifs. Plus court qu'un `match` qui renvoie `true` / `false`.
+
+### `match` sur un tuple
+
+```rust
+match (was_down, now_down) {
+    (false, true) => { /* vient d'être enfoncé */ }
+    (true, false) => { /* vient d'être relâché */ }
+    _ => {} // pas de changement
+}
+```
+
+On regroupe deux valeurs dans un tuple pour traiter les 4 combinaisons d'un coup.
+
+### Interroger plutôt qu'écouter
+
+- `SetTimer(null, 0, 15, None)` : un minuteur Windows rattaché au thread. Il envoie un message `WM_TIMER` toutes les ~15 ms, reçu dans la même boucle `GetMessageW` que le hook clavier. Un seul thread gère donc clavier et souris, sans verrou.
+- À chaque tic, `GetAsyncKeyState` donne l'état de chaque bouton surveillé. `MousePoller` compare avec le tic précédent et produit des `Pressed` / `Released`, traités comme des touches du clavier.
+- La fonction de lecture d'état est **passée en paramètre** (`is_down: impl Fn(Key) -> bool`) : les tests simulent ainsi la souris, comme on simulait l'heure à l'étape 5.
+
+### Mesurer avant de choisir
+
+- Banc de mesure hors dépôt (`RustSandbox/mouse_bench`) : interrogation contre Raw Input, avec une souris simulée de 125 à 6 400 Hz (`SendInput`) et la vraie souris. Résultats dans la spec (F5).
+- `GetProcessTimes` : le temps CPU consommé par le programme (noyau + utilisateur), en tranches de 100 ns. Windows ne le met à jour que toutes les ~15,6 ms : les petites mesures sont imprécises, il faut mesurer sur plusieurs secondes.
+- **Surprise de la mesure** : le coût venait de winit, pas de notre code. On crée donc nous-mêmes la boucle d'événements pour la régler :
+
+```rust
+let event_loop = EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+event_loop.listen_device_events(DeviceEvents::Never);
+let mut app = eframe::create_native("...", options, Box::new(...), &event_loop);
+event_loop.run_app(&mut app)?;
+```
+
+- `EventLoop::<eframe::UserEvent>` : on précise le **paramètre de type** (le type des messages internes d'eframe) avec la syntaxe « turbofish » `::<...>`.
+- `?` dans `main` : `main` renvoie un `eframe::Result`, donc une erreur de winit est convertie automatiquement (`From`) et fait quitter le programme proprement.

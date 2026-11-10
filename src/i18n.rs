@@ -62,6 +62,16 @@ pub fn key_name(key: Key, language: Language) -> String {
         Key::NUMPAD_ADD => "Num +",
         Key::NUMPAD_SUBTRACT => "Num -",
         Key::NUMPAD_DECIMAL => "Num .",
+        Key::MOUSE_LEFT if french => "Clic gauche",
+        Key::MOUSE_LEFT => "Left click",
+        Key::MOUSE_RIGHT if french => "Clic droit",
+        Key::MOUSE_RIGHT => "Right click",
+        Key::MOUSE_MIDDLE if french => "Clic molette",
+        Key::MOUSE_MIDDLE => "Middle click",
+        Key::MOUSE_X1 if french => "Souris X1 (arrière)",
+        Key::MOUSE_X1 => "Mouse X1 (back)",
+        Key::MOUSE_X2 if french => "Souris X2 (avant)",
+        Key::MOUSE_X2 => "Mouse X2 (forward)",
         // Les autres touches sont calculées plus bas.
         _ => "",
     };
@@ -122,6 +132,27 @@ mod tests {
         assert_eq!(key_name(Key::NUMPAD_ENTER, Language::English), "Num Enter");
         assert_eq!(key_name(Key::SHIFT, Language::French), "Maj");
         assert_eq!(key_name(Key::SHIFT, Language::English), "Shift");
+    }
+
+    #[test]
+    fn mouse_button_names() {
+        assert_eq!(
+            key_name(Key::MOUSE_MIDDLE, Language::French),
+            "Clic molette"
+        );
+        assert_eq!(
+            key_name(Key::MOUSE_MIDDLE, Language::English),
+            "Middle click"
+        );
+        let shortcut = Shortcut {
+            held: vec![Key::CONTROL],
+            trigger: Key::MOUSE_MIDDLE,
+            command: Command::Reset,
+        };
+        assert_eq!(
+            shortcut_name(&shortcut, Language::French),
+            "Ctrl + Clic molette"
+        );
     }
 
     #[test]
