@@ -56,6 +56,14 @@ impl NativeWindow {
         windows::hide_from_task_switcher(self.hwnd);
     }
 
+    /// Exclut la fenêtre de toutes les captures (OBS, Discord, captures d'écran) : elle reste
+    /// visible à l'écran, mais apparaît vide (ou absente) dans les captures.
+    /// Windows 10 2004 et plus récent ; sans effet sur les versions plus anciennes.
+    pub fn exclude_from_capture(&self) {
+        #[cfg(windows)]
+        windows::exclude_from_capture(self.hwnd);
+    }
+
     /// Retire liseré, coins arrondis, ombre et ligne du haut ajoutés par Windows / winit.
     pub fn remove_decorations(&self) {
         #[cfg(windows)]
@@ -86,8 +94,9 @@ mod windows {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         FindWindowExW, GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, GetWindowThreadProcessId,
         STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_NOZORDER, SetWindowLongW, SetWindowPos, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT,
-        WM_STYLECHANGING, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_POPUP, WS_THICKFRAME,
+        SWP_NOZORDER, SetWindowDisplayAffinity, SetWindowLongW, SetWindowPos,
+        WDA_EXCLUDEFROMCAPTURE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_STYLECHANGING,
+        WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_POPUP, WS_THICKFRAME,
     };
 
     /// Identifiant de notre « sous-classe » (n'importe quel nombre unique pour nous).
@@ -122,6 +131,11 @@ mod windows {
             }
             previous = hwnd;
         }
+    }
+
+    pub fn exclude_from_capture(hwnd: isize) {
+        // SÉCURITÉ : simple réglage d'une fenêtre valide de notre programme.
+        unsafe { SetWindowDisplayAffinity(hwnd as HWND, WDA_EXCLUDEFROMCAPTURE) };
     }
 
     pub fn hide_from_task_switcher(hwnd: isize) {
