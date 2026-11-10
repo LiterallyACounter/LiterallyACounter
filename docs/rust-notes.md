@@ -190,3 +190,60 @@ Projet d'essai : `RustSandbox/hello_egui/` (hors dépôt).
 - `(0..n).map(|i| ...).collect()` : génère une liste calculée (ici, les échantillons d'une onde sinusoïdale).
 - `#[cfg(windows)]` sur un test : ce test ne tourne que sous Windows.
 - Les noms d'import d'une crate peuvent bouger d'une version à l'autre : `rodio::SamplesBuffer` n'existe plus en 0.23, c'est `rodio::buffer::SamplesBuffer`. Le compilateur l'a signalé tout de suite (`unresolved import`).
+
+---
+
+## Étape 4 : format, objectif, couleurs, taille dynamique
+
+### Chaînes de caractères
+
+- **`String`** (texte possédé, modifiable) ou **`&str`** (texte emprunté, en lecture). Une fonction qui *lit* un texte prend un `&str` ; une fonction qui en *fabrique* un renvoie un `String`.
+- `.into()` convertit `"texte"` (`&str`) en `String` quand le type attendu est connu.
+- Les chaînes Rust sont en **UTF-8** : un caractère peut occuper plusieurs octets, donc on ne peut pas écrire `texte[3]`. On passe par `.chars()` (ici collecté dans un `Vec<char>` pour pouvoir regarder « le suivant »).
+- Méthodes utiles : `split_once(':')`, `trim()`, `to_lowercase()`, `trim_end_matches('0')`, `replace('.', ",")`, `push(c)`, `push_str(s)`.
+- `format!("{ratio:.2}")` : 2 décimales. `format!("{{{content}}}")` : `{{` et `}}` donnent une accolade littérale, comme dans notre format.
+
+### `match` avancé
+
+- **Plusieurs motifs** : `"value" | "valeur" => ...`.
+- **Gardes** : `']' if in_conditional => ...` (la branche ne s'applique que si la condition est vraie).
+- **Tuples** : `match (name.as_str(), spec) { ("ratio", Some("p")) => ... }` pour tester deux valeurs à la fois.
+- **`matches!(valeur, Motif)`** : un `bool` qui vaut `true` si la valeur correspond au motif.
+- **Variantes « struct »** : `Ratio { percent: bool }`, une variante avec un champ nommé.
+
+### Récursivité et `&mut` partagé
+
+- `parse_sequence` s'appelle **elle-même** pour analyser l'intérieur des crochets.
+- `position: &mut usize` : l'appelant et la fonction appelée partagent la même position. Quand la fonction intérieure avance, l'appelant le voit. `*position += 1` : l'étoile *déréférence*, c'est-à-dire qu'on modifie la valeur pointée et non la référence.
+
+### Implémenter un trait soi-même
+
+- `impl Default for DisplayStyle { fn default() -> Self { ... } }` : on écrit la valeur par défaut à la main, quand `#[derive(Default)]` (tout à zéro) ne convient pas.
+- `DisplayStyle { background: ..., ..DisplayStyle::default() }` : on change un champ et on garde les autres par défaut.
+- `fn clear_color(&self, ...)` dans `impl eframe::App` : un trait peut avoir des méthodes **facultatives** (avec une version par défaut), qu'on remplace si besoin.
+
+### Annotations conditionnelles
+
+- `#[cfg_attr(not(test), expect(dead_code, reason = "..."))]` : applique `expect(dead_code)` **seulement hors tests**. Les tests utilisent déjà ces variantes, donc en mode test elles ne sont pas « inutilisées ».
+
+### egui : dessiner soi-même
+
+- `painter.layout_no_wrap(texte, police, couleur)` met en page un texte (un `Galley`) et donne sa taille **avant** de le dessiner : c'est ce qui permet d'ajuster la fenêtre au texte.
+- `painter.galley(position, galley, couleur)` dessine ce texte.
+- `ViewportCommand::InnerSize(...)` / `OuterPosition(...)` redimensionnent et déplacent la fenêtre. `ctx.input(|i| i.viewport().outer_rect)` donne sa position actuelle.
+- La transparence se demande **à la création** de la fenêtre (`with_transparent(true)`), et la couleur d'effacement (`clear_color`) doit aussi être transparente.
+
+### Transparence sous Windows : ce qu'on a appris
+
+- **Moteur de rendu** : eframe peut dessiner avec `wgpu` (DirectX 12, par défaut) ou `glow` (OpenGL). La transparence `wgpu` est cassée par la capture OBS ; `glow` fonctionne et pèse beaucoup moins lourd (exe de 14,85 → 6,25 Mo). On le choisit via les features : `eframe = { default-features = false, features = ["glow", "default_fonts"] }`.
+- **Lire le code des dépendances** : le code source de toutes les crates est dans `~/.cargo/registry/src/`. C'est en lisant winit qu'on a trouvé l'origine de la ligne noire en haut de la fenêtre.
+- **`raw-window-handle`** : la crate standard pour obtenir l'identifiant système d'une fenêtre (`HWND` sous Windows). `RawWindowHandle` est un enum avec une variante par système.
+- **Sous-classe de fenêtre** (`SetWindowSubclass`) : insère notre fonction devant celle de winit pour intercepter un message Windows (`WM_NCCALCSIZE`) et y répondre autrement. Tous les autres messages sont retransmis (`DefSubclassProc`).
+- `&value as *const u32 as *const c_void` : on transforme une référence Rust en **pointeur brut** pour la passer à une fonction C. Un pointeur brut n'a aucune garantie : c'est pour ça que son utilisation demande `unsafe`.
+- **Coins arrondis maison** : la fenêtre est *toujours* transparente (`with_transparent(true)`, `clear_color` transparent), et on dessine nous-mêmes le fond avec `Frame::NONE.fill(couleur).corner_radius(CornerRadius::same(8))`. Les 4 coins sont identiques sur toutes les machines, et le même code sert au fond opaque comme au fond transparent.
+- **Redimensionner en une fois** : `SetWindowPos` change taille *et* position en un seul appel, avec `SWP_NOCOPYBITS` (ne pas recopier l'ancienne image). C'est plus net que les deux commandes successives d'egui. Windows compte en **pixels physiques** et egui en **points** : on convertit avec `ctx.pixels_per_point()` (1,25 si l'affichage est à 125 %).
+- **`Option::inspect(|x| ...)`** : exécute une action sur la valeur si elle existe, puis rend l'`Option` inchangée.
+- **`#[cfg(...)]` sur un champ de struct** ou sur une branche de `match` : le champ `hwnd` de `NativeWindow` n'existe que sous Windows.
+- **Barre de titre fantôme** : winit garde le style `WS_CAPTION` (barre de titre) pour obtenir l'ombre. Comme on a désactivé le dessin des bordures par Windows 11, l'ancien moteur de Windows redessinait une barre de titre classique (✕, □, _) à chaque redimensionnement. La sous-classe bloque donc aussi `WM_NCPAINT`, `WM_NCACTIVATE` et deux messages internes (`0xAE`, `0xAF`). Le `match` avec garde (`WM_NCCALCSIZE if wparam != 0 => ...`) rend ce tri lisible.
+- **Piège `WM_NCACTIVATE`** : l'ignorer complètement (`return 1`) empêchait le glisser, car Windows y met à jour son état interne d'activation. La bonne façon : le transmettre avec `lparam = -1`, la valeur prévue par Windows pour « traite-le sans redessiner la bordure ».
+- **Tester un glisser** : simuler la souris avec `SetCursorPos` ne génère pas de vrais mouvements. Il faut `mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ...)`. Toujours valider un outil de test sur une version qui marche avant de conclure.
