@@ -5,20 +5,28 @@ edition = "2024"
 
 [dependencies]
 # Fenêtres et interface (egui).
-eframe = "0.37.0"
+# On désactive les features par défaut pour choisir le moteur de rendu :
+# - "glow" (OpenGL) plutôt que "wgpu" (DirectX 12 par défaut) : la transparence wgpu
+#   est cassée par la capture OBS, et glow est bien plus léger ;
+# - "default_fonts" : les polices intégrées d'egui (les polices système viendront à l'étape 8).
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
 # Audio. On désactive tout par défaut et on n'active que :
 # - "playback" : la lecture sur un périphérique audio (via cpal) ;
 # - "hound" : un décodeur WAV léger (les sons Windows sont en WAV).
 # Les autres formats (MP3, OGG) seront ajoutés à l'étape 8 avec l'import de sons.
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "hound"] }
+# Accès à l'identifiant système de la fenêtre (déjà utilisé par eframe : aucun poids en plus).
+raw-window-handle = "0.6.2"
 
 # Dépendances utilisées uniquement quand on compile pour Windows.
 [target.'cfg(windows)'.dependencies]
-# Accès direct à l'API Windows (crate officielle Microsoft) : hook clavier global.
+# Accès direct à l'API Windows (crate officielle Microsoft).
 # Chaque « feature » active une partie de l'API ; on n'active que ce qui sert.
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",       # hook clavier
+    "Win32_UI_Input_KeyboardAndMouse",    # état des touches
+    "Win32_System_LibraryLoader",         # hook clavier
+    "Win32_Graphics_Dwm",                 # liseré, coins arrondis, ombre (Windows 11)
+    "Win32_UI_Shell",                     # sous-classe de fenêtre (ligne du haut)
 ] }

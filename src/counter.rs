@@ -26,22 +26,48 @@ pub enum CounterAction {
 ///
 /// `#[derive(...)]` fait générer automatiquement par le compilateur :
 /// - `Debug` : la possibilité d'afficher le compteur pour déboguer (`println!("{:?}", c)`) ;
-/// - `Default` : un compteur par défaut, avec `value` à 0.
+/// - `Default` : un compteur par défaut, avec `value` et `goal` à 0.
 #[derive(Debug, Default)]
 pub struct Counter {
     // Pas de `pub` : le champ est PRIVÉ, seul ce module peut le modifier.
     // Le reste du programme doit passer par les méthodes ci-dessous, ce qui garantit
     // que les règles (comme « jamais sous 0 ») sont toujours respectées.
     value: u64,
+    /// L'objectif. 0 = pas d'objectif.
+    goal: u64,
 }
 
 // `impl Counter` : les MÉTHODES du compteur (des fonctions attachées à la struct).
 impl Counter {
+    /// Crée un compteur à 0 avec un objectif (0 = pas d'objectif).
+    /// `..Self::default()` : les autres champs prennent leur valeur par défaut.
+    pub fn with_goal(goal: u64) -> Self {
+        Self {
+            goal,
+            ..Self::default()
+        }
+    }
+
     /// Renvoie la valeur actuelle.
     /// `&self` : on emprunte le compteur en LECTURE SEULE.
     pub fn value(&self) -> u64 {
         // En Rust, la dernière expression d'une fonction (sans `;`) est la valeur renvoyée.
         self.value
+    }
+
+    /// Renvoie l'objectif (0 = pas d'objectif).
+    pub fn goal(&self) -> u64 {
+        self.goal
+    }
+
+    /// L'objectif est-il atteint ?
+    /// `None` s'il n'y a pas d'objectif, `Some(true)` si atteint ou dépassé, `Some(false)` sinon.
+    pub fn goal_reached(&self) -> Option<bool> {
+        if self.goal == 0 {
+            None
+        } else {
+            Some(self.value >= self.goal)
+        }
     }
 
     /// Applique une action au compteur.
@@ -100,6 +126,23 @@ mod tests {
         let mut counter = Counter::default();
         counter.apply(CounterAction::Subtract(1));
         assert_eq!(counter.value(), 0);
+    }
+
+    #[test]
+    fn no_goal_by_default() {
+        let counter = Counter::default();
+        assert_eq!(counter.goal(), 0);
+        assert_eq!(counter.goal_reached(), None);
+    }
+
+    #[test]
+    fn goal_reached_when_equal_or_above() {
+        let mut counter = Counter::with_goal(2);
+        assert_eq!(counter.goal_reached(), Some(false));
+        counter.apply(CounterAction::Add(2));
+        assert_eq!(counter.goal_reached(), Some(true)); // égal = atteint
+        counter.apply(CounterAction::Add(1));
+        assert_eq!(counter.goal_reached(), Some(true)); // dépassé = atteint
     }
 
     #[test]
