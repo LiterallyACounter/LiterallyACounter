@@ -1,4 +1,5 @@
-//! Sauvegarde de l'état (la valeur du compteur global) dans un fichier JSON.
+//! Sauvegarde de l'état dans un fichier JSON : la valeur du compteur global, les styles
+//! d'affichage, l'option de copie et les fenêtres ouvertes.
 //!
 //! - Emplacement : le dossier de configuration standard du système, fourni par la crate `dirs`
 //!   (Windows : `%APPDATA%\LiterallyACounter\state.json`).
@@ -16,18 +17,48 @@ use std::path::{Path, PathBuf};
 // le code qui convertit la struct en JSON et inversement.
 use serde::{Deserialize, Serialize};
 
+use crate::display::DisplayStyle;
+
 const APP_FOLDER: &str = "LiterallyACounter";
 const STATE_FILE: &str = "state.json";
 
 /// Ce qui est sauvegardé.
 ///
 /// `#[serde(default)]` : si un champ manque dans le fichier (par ex. un fichier écrit par une
-/// version plus ancienne de l'appli), on prend sa valeur par défaut au lieu d'échouer.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// version plus ancienne de l'appli, comme `{"global_value": 14}` de l'étape 5), on prend
+/// sa valeur par défaut au lieu d'échouer.
+///
+/// La valeur de la PARTIE n'est jamais sauvegardée (elle repart de 0 au lancement).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SavedState {
     /// Valeur du compteur global.
     pub global_value: u64,
+    /// Affichage du global.
+    pub global_style: DisplayStyle,
+    /// Affichage propre de la partie : utilisé seulement quand la copie est désactivée,
+    /// mais conservé dans tous les cas.
+    pub round_style: DisplayStyle,
+    /// « Copier l'affichage du global » pour la partie.
+    pub round_copies_global: bool,
+    /// Fenêtres ouvertes (leur position n'est pas sauvegardée).
+    pub show_global: bool,
+    pub show_round: bool,
+}
+
+// Valeurs par défaut écrites à la main : les booléens doivent valoir `true` (le `derive`
+// automatique mettrait `false`).
+impl Default for SavedState {
+    fn default() -> Self {
+        Self {
+            global_value: 0,
+            global_style: DisplayStyle::default(),
+            round_style: DisplayStyle::round_default(),
+            round_copies_global: true,
+            show_global: true,
+            show_round: true,
+        }
+    }
 }
 
 /// Le chemin du fichier de sauvegarde, ou `None` si le système ne fournit pas de dossier
@@ -99,7 +130,12 @@ mod tests {
     fn save_then_load_gives_the_same_state() {
         let dir = test_dir("roundtrip");
         let path = dir.join("state.json");
-        let state = SavedState { global_value: 152 };
+        let state = SavedState {
+            global_value: 152,
+            round_copies_global: false,
+            show_round: false,
+            ..SavedState::default()
+        };
         save(&path, &state).expect("la sauvegarde doit réussir");
         assert_eq!(load(&path), state);
         // Le fichier temporaire ne doit pas rester.
@@ -111,8 +147,12 @@ mod tests {
     fn save_overwrites_previous_state() {
         let dir = test_dir("overwrite");
         let path = dir.join("state.json");
-        save(&path, &SavedState { global_value: 1 }).unwrap();
-        save(&path, &SavedState { global_value: 2 }).unwrap();
+        let state = |global_value| SavedState {
+            global_value,
+            ..SavedState::default()
+        };
+        save(&path, &state(1)).unwrap();
+        save(&path, &state(2)).unwrap();
         assert_eq!(load(&path).global_value, 2);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -139,8 +179,28 @@ mod tests {
     }
 
     #[test]
+    fn step_5_save_is_read_without_loss() {
+        // Le fichier tel qu'écrit par l'étape 5 : seule la valeur du global.
+        let dir = test_dir("step5");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, "{\"global_value\": 14}").unwrap();
+        let state = load(&path);
+        assert_eq!(state.global_value, 14);
+        // Le reste prend les valeurs par défaut : copie activée, deux fenêtres ouvertes.
+        assert!(state.round_copies_global);
+        assert!(state.show_global && state.show_round);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn json_is_human_readable() {
-        let json = serde_json::to_string_pretty(&SavedState { global_value: 152 }).unwrap();
-        assert_eq!(json, "{\n  \"global_value\": 152\n}");
+        let json = serde_json::to_string_pretty(&SavedState::default()).unwrap();
+        assert!(json.starts_with(
+            "{
+  \"global_value\": 0,
+  \"global_style\": {"
+        ));
+        assert!(json.contains("\"background\": \"#1E1E1EFF\""));
     }
 }

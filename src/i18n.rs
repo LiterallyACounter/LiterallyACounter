@@ -25,6 +25,18 @@ pub enum Language {
 pub enum Text {
     /// Demande de confirmation du reset. Emplacement : `{key}` (touche de validation).
     ResetPrompt,
+    /// Titre de la fenêtre du compteur global (visible dans la barre des tâches et OBS).
+    GlobalWindowTitle,
+    /// Titre de la fenêtre du compteur de partie.
+    RoundWindowTitle,
+    /// Fenêtre principale : case « afficher le global ».
+    ShowGlobal,
+    /// Fenêtre principale : case « afficher la partie ».
+    ShowRound,
+    /// Fenêtre principale : option de copie de l'affichage.
+    RoundCopiesGlobal,
+    /// Fenêtre principale : bouton pour quitter l'appli.
+    Quit,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -33,6 +45,18 @@ pub fn template(text: Text, language: Language) -> &'static str {
     match (text, language) {
         (Text::ResetPrompt, Language::French) => "Reset ? ({key} pour valider)",
         (Text::ResetPrompt, Language::English) => "Reset? ({key} to confirm)",
+        (Text::GlobalWindowTitle, Language::French) => "Literally A Counter : global",
+        (Text::GlobalWindowTitle, Language::English) => "Literally A Counter: total",
+        (Text::RoundWindowTitle, Language::French) => "Literally A Counter : partie",
+        (Text::RoundWindowTitle, Language::English) => "Literally A Counter: round",
+        (Text::ShowGlobal, Language::French) => "Afficher le compteur global",
+        (Text::ShowGlobal, Language::English) => "Show the total counter",
+        (Text::ShowRound, Language::French) => "Afficher le compteur de partie",
+        (Text::ShowRound, Language::English) => "Show the round counter",
+        (Text::RoundCopiesGlobal, Language::French) => "La partie copie l'affichage du global",
+        (Text::RoundCopiesGlobal, Language::English) => "Round uses the total's display",
+        (Text::Quit, Language::French) => "Quitter",
+        (Text::Quit, Language::English) => "Quit",
     }
 }
 
@@ -108,6 +132,7 @@ pub fn shortcut_name(shortcut: &Shortcut, language: Language) -> String {
 mod tests {
     use super::*;
     use crate::command::Command;
+    use crate::tracker::CounterId;
 
     #[test]
     fn reset_prompt_uses_the_configured_key() {
@@ -147,7 +172,7 @@ mod tests {
         let shortcut = Shortcut {
             held: vec![Key::CONTROL],
             trigger: Key::MOUSE_MIDDLE,
-            command: Command::Reset,
+            command: Command::Reset(CounterId::Global),
         };
         assert_eq!(
             shortcut_name(&shortcut, Language::French),
@@ -171,7 +196,7 @@ mod tests {
         let reset = Shortcut {
             held: vec![Key::CONTROL],
             trigger: Key::NUMPAD_0,
-            command: Command::Reset,
+            command: Command::Reset(CounterId::Global),
         };
         assert_eq!(shortcut_name(&reset, Language::French), "Ctrl + Num 0");
 

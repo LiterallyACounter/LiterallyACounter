@@ -14,6 +14,8 @@ use super::{Key, Shortcut};
 use crate::command::Command;
 #[cfg(test)]
 use crate::counter::CounterAction;
+#[cfg(test)]
+use crate::tracker::Targets;
 
 pub struct Matcher {
     shortcuts: Vec<Shortcut>,
@@ -98,17 +100,17 @@ mod tests {
             Shortcut {
                 held: vec![],
                 trigger: Key::NUMPAD_ADD,
-                command: Command::Count(CounterAction::Add(1)),
+                command: Command::Count(Targets::BOTH, CounterAction::Add(1)),
             },
             Shortcut {
                 held: vec![],
                 trigger: Key::NUMPAD_SUBTRACT,
-                command: Command::Count(CounterAction::Subtract(1)),
+                command: Command::Count(Targets::BOTH, CounterAction::Subtract(1)),
             },
             Shortcut {
                 held: vec![Key::CONTROL],
                 trigger: Key::NUMPAD_ADD,
-                command: Command::Count(CounterAction::Add(5)),
+                command: Command::Count(Targets::BOTH, CounterAction::Add(5)),
             },
         ])
     }
@@ -118,7 +120,7 @@ mod tests {
         let mut m = test_matcher();
         assert_eq!(
             m.key_down(Key::NUMPAD_ADD),
-            vec![Command::Count(CounterAction::Add(1))]
+            vec![Command::Count(Targets::BOTH, CounterAction::Add(1))]
         );
     }
 
@@ -135,7 +137,7 @@ mod tests {
         m.key_down(Z);
         assert_eq!(
             m.key_down(Key::NUMPAD_ADD),
-            vec![Command::Count(CounterAction::Add(1))]
+            vec![Command::Count(Targets::BOTH, CounterAction::Add(1))]
         );
     }
 
@@ -146,7 +148,7 @@ mod tests {
         m.key_down(Key::CONTROL);
         assert_eq!(
             m.key_down(Key::NUMPAD_ADD),
-            vec![Command::Count(CounterAction::Add(5))]
+            vec![Command::Count(Targets::BOTH, CounterAction::Add(5))]
         );
     }
 
@@ -164,7 +166,7 @@ mod tests {
         let mut m = test_matcher();
         assert_eq!(
             m.key_down(Key::NUMPAD_ADD),
-            vec![Command::Count(CounterAction::Add(1))]
+            vec![Command::Count(Targets::BOTH, CounterAction::Add(1))]
         );
         assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![]);
         assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![]);
@@ -177,7 +179,7 @@ mod tests {
         m.key_up(Key::NUMPAD_ADD);
         assert_eq!(
             m.key_down(Key::NUMPAD_ADD),
-            vec![Command::Count(CounterAction::Add(1))]
+            vec![Command::Count(Targets::BOTH, CounterAction::Add(1))]
         );
     }
 
@@ -188,7 +190,7 @@ mod tests {
         m.key_up(Key::CONTROL);
         assert_eq!(
             m.key_down(Key::NUMPAD_ADD),
-            vec![Command::Count(CounterAction::Add(1))]
+            vec![Command::Count(Targets::BOTH, CounterAction::Add(1))]
         );
     }
 
@@ -201,7 +203,7 @@ mod tests {
         m.forget_released(|_| false); // `|_| false` : fonction qui répond « relâchée » pour toute touche
         assert_eq!(
             m.key_down(Key::NUMPAD_ADD),
-            vec![Command::Count(CounterAction::Add(1))]
+            vec![Command::Count(Targets::BOTH, CounterAction::Add(1))]
         );
     }
 }
