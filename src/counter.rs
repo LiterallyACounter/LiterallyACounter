@@ -12,7 +12,7 @@
 /// `derive` génère automatiquement :
 /// - `Clone, Copy` : l'action peut être copiée librement (c'est juste un petit nombre) ;
 /// - `PartialEq, Eq` : on peut comparer deux actions avec `==` (utile dans les tests).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CounterAction {
     Add(u64),
     Subtract(u64),
@@ -65,6 +65,11 @@ impl Counter {
         self.goal
     }
 
+    /// Change l'objectif (0 = pas d'objectif). La valeur, elle, ne bouge pas.
+    pub fn set_goal(&mut self, goal: u64) {
+        self.goal = goal;
+    }
+
     /// L'objectif est-il atteint ?
     /// `None` s'il n'y a pas d'objectif, `Some(true)` si atteint ou dépassé, `Some(false)` sinon.
     pub fn goal_reached(&self) -> Option<bool> {
@@ -90,6 +95,13 @@ impl Counter {
             CounterAction::Subtract(n) => self.value = self.value.saturating_sub(n),
         }
         // On a recompté : le reset précédent était voulu, on ne peut plus l'annuler.
+        self.value_before_reset = None;
+    }
+
+    /// Fixe directement la valeur (saisie dans le menu). Ce n'est pas un reset : il n'y a rien
+    /// à annuler ensuite, comme quand on recompte après un reset.
+    pub fn set_value(&mut self, value: u64) {
+        self.value = value;
         self.value_before_reset = None;
     }
 
@@ -151,6 +163,25 @@ mod tests {
         let mut counter = Counter::default();
         counter.apply(CounterAction::Subtract(1));
         assert_eq!(counter.value(), 0);
+    }
+
+    #[test]
+    fn set_value_forbids_undo() {
+        let mut counter = Counter::new(7, 0);
+        counter.reset();
+        counter.set_value(42);
+        assert_eq!(counter.value(), 42);
+        assert!(!counter.undo_reset());
+        assert_eq!(counter.value(), 42);
+    }
+
+    #[test]
+    fn set_goal_keeps_the_value() {
+        let mut counter = Counter::new(7, 10);
+        counter.set_goal(5);
+        assert_eq!(counter.goal(), 5);
+        assert_eq!(counter.value(), 7);
+        assert_eq!(counter.goal_reached(), Some(true));
     }
 
     #[test]

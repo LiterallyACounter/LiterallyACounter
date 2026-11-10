@@ -6,6 +6,7 @@
 // `mod xxx;` : déclare un module. Son code est dans `src/xxx.rs` ou `src/xxx/mod.rs`.
 mod audio;
 mod command;
+mod config_window;
 mod counter;
 mod display;
 mod format;
@@ -23,10 +24,11 @@ use std::time::{Duration, Instant};
 
 use audio::AudioEngine;
 use command::Command;
+use config_window::{CaptureRefused, CaptureTarget, ShortcutRequest};
 use counter::{Counter, CounterAction};
 use display::DisplayStyle;
 use eframe::egui;
-use hotkeys::{Key, Shortcut};
+use hotkeys::{Control, HotkeyEvent, HotkeyHandle, Key, MouseMethod, Shortcut};
 use i18n::{Language, Text};
 use native_window::NativeWindow;
 use storage::SavedState;
@@ -39,11 +41,58 @@ const LANGUAGE: Language = Language::French;
 /// Taille des fenêtres compteurs à leur création ; elle s'ajuste au texte dès la première image.
 const INITIAL_COUNTER_SIZE: egui::Vec2 = egui::vec2(200.0, 100.0);
 
-/// Objectifs codés en dur pour tester (configurables à l'étape 8). 0 = pas d'objectif.
-const GLOBAL_GOAL: u64 = 10;
-const ROUND_GOAL: u64 = 3;
+/// Les onglets de la fenêtre de configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigTab {
+    Counters,
+    Shortcuts,
+}
 
-/// Identifiant egui de la fenêtre principale.
+/// Taille de la fenêtre du menu d'un compteur, sans la liste des raccourcis.
+const MENU_BASE_SIZE: egui::Vec2 = egui::vec2(330.0, 190.0);
+/// Hauteur d'une ligne de la liste des raccourcis dans le menu (mesurée à l'écran).
+const MENU_ROW_HEIGHT: f32 = 24.0;
+/// Hauteur ajoutée par la section des raccourcis (titre, bouton « Modifier… »).
+const MENU_SECTION_HEIGHT: f32 = 22.0;
+
+/// Taille du menu quand il liste `rows` lignes de raccourcis (un raccourci par ligne).
+fn menu_size(rows: usize) -> egui::Vec2 {
+    MENU_BASE_SIZE + egui::vec2(0.0, MENU_SECTION_HEIGHT + rows as f32 * MENU_ROW_HEIGHT)
+}
+
+/// Le menu ouvert d'un compteur.
+struct CounterMenu {
+    /// Le compteur concerné (numéro dans `App::windows`).
+    index: usize,
+    /// La valeur en cours de saisie.
+    value: u64,
+    /// Position du menu à l'écran, choisie à l'ouverture.
+    position: egui::Pos2,
+    /// Taille du menu, calculée à l'ouverture selon le nombre de raccourcis listés.
+    size: egui::Vec2,
+    /// Le menu a-t-il déjà eu le focus ? (Il se ferme quand il le PERD, pas avant de l'avoir eu.)
+    was_focused: bool,
+    native: Option<NativeWindow>,
+}
+
+/// Ce que l'utilisateur a choisi dans le menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuAction {
+    SetValue(u64),
+    Reset,
+    SetAlwaysOnTop(bool),
+    Hide,
+    OpenSettings,
+    EditShortcuts,
+    Close,
+}
+
+/// Identifiant egui de la fenêtre du menu (un seul menu ouvert à la fois).
+fn menu_viewport() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("counter_menu")
+}
+
+/// Identifiant egui de la fenêtre principale (la configuration).
 /// (Il est calculé par une fonction : `from_hash_of` ne peut pas servir dans une `const`.)
 fn main_viewport() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("main")
@@ -98,8 +147,11 @@ impl CounterWindow {
 /// la réduire retarderait l'affichage ET le son de chaque appui sur une touche.
 struct App {
     tracker: Tracker,
-    /// Bout « réception » du channel : les commandes envoyées par le thread des raccourcis arrivent ici.
-    commands: Receiver<Command>,
+    /// Bout « réception » du channel : les événements du thread des raccourcis arrivent ici
+    /// (raccourci déclenché, capture terminée…).
+    events: Receiver<HotkeyEvent>,
+    /// Le moyen de piloter le thread des raccourcis (`None` s'il n'a pas pu démarrer).
+    hotkeys: Option<HotkeyHandle>,
     /// Le moteur audio. `None` s'il n'y a aucune sortie audio : l'appli marche alors sans son.
     audio: Option<AudioEngine>,
     /// Affichage du global.
@@ -113,6 +165,24 @@ struct App {
     windows: [CounterWindow; 2],
     /// Nom de la touche de validation, tiré des raccourcis configurés (ex. « Num Entrée »).
     confirm_key_name: String,
+    /// Les raccourcis (modifiables dans la configuration).
+    shortcuts: Vec<Shortcut>,
+    /// Capture d'un raccourci en cours.
+    capture: Option<CaptureTarget>,
+    /// Message affiché après une capture refusée.
+    capture_error: Option<String>,
+    /// L'onglet affiché dans la configuration.
+    tab: ConfigTab,
+    /// Un réglage a changé et n'est pas encore sauvegardé. On attend que le bouton de la souris
+    /// soit relâché : glisser un curseur change la valeur à chaque image, et on ne veut pas
+    /// réécrire le fichier 60 fois par seconde.
+    unsaved_changes: bool,
+    /// Le menu d'un compteur, s'il est ouvert.
+    menu: Option<CounterMenu>,
+    /// Méthode d'écoute de la souris.
+    mouse_method: MouseMethod,
+    /// Fréquence des événements souris, si elle est élevée (protection automatique).
+    mouse_rate: Option<u32>,
     /// Fichier de sauvegarde (`None` si le système n'a pas de dossier de configuration).
     state_path: Option<PathBuf>,
 }
@@ -131,7 +201,7 @@ impl App {
             audio.play(slot);
         }
         if outcome.save {
-            self.save();
+            self.save_state();
         }
         if outcome.reset_prompt_started {
             // À l'expiration du délai, il faut redessiner pour effacer « Reset ? », même si
@@ -146,7 +216,7 @@ impl App {
 
     /// Sauvegarde l'état. En cas d'échec, on le signale sans planter : l'appli continue
     /// de compter, et réessaiera au prochain changement.
-    fn save(&self) {
+    fn save_state(&self) {
         let Some(path) = &self.state_path else {
             return;
         };
@@ -154,11 +224,15 @@ impl App {
         let [global, round] = &self.windows;
         let state = SavedState {
             global_value: self.tracker.counter(CounterId::Global).value(),
+            global_goal: self.tracker.counter(CounterId::Global).goal(),
+            round_goal: self.tracker.counter(CounterId::Round).goal(),
             global_style: self.global_style.clone(),
             round_style: self.round_style.clone(),
             round_copies_global: self.round_copies_global,
             show_global: global.visible,
             show_round: round.visible,
+            shortcuts: self.shortcuts.clone(),
+            mouse_method: self.mouse_method,
         };
         if let Err(error) = storage::save(path, &state) {
             eprintln!("Sauvegarde impossible : {error}");
@@ -200,11 +274,12 @@ impl App {
         (text, style.text_color(counter.goal_reached()))
     }
 
-    /// La fenêtre principale (provisoire : la vraie configuration arrive à l'étape 8).
+    /// La fenêtre principale : la configuration, en deux onglets.
     fn main_window(&mut self, ctx: &egui::Context) {
         let builder = egui::ViewportBuilder::default()
-            .with_title("Literally A Counter")
-            .with_inner_size([340.0, 150.0]);
+            .with_title(i18n::text(Text::ConfigWindowTitle, LANGUAGE))
+            .with_inner_size([520.0, 640.0])
+            .with_min_inner_size([360.0, 240.0]);
         // `show_viewport_immediate` : affiche une fenêtre supplémentaire, dessinée TOUT DE SUITE
         // par la closure. La closure peut donc emprunter `self` (pas besoin de partager les
         // données entre threads, contrairement aux viewports « deferred »).
@@ -214,42 +289,183 @@ impl App {
                 quit(ui.ctx());
             }
             egui::CentralPanel::default().show(ui, |ui| {
-                let mut changed = false;
-                // `&mut self.windows` : on parcourt les fenêtres en pouvant les modifier.
-                for window in &mut self.windows {
-                    let label = match window.id {
-                        CounterId::Global => Text::ShowGlobal,
-                        CounterId::Round => Text::ShowRound,
-                    };
-                    let mut visible = window.visible;
-                    // `checkbox` modifie `visible` quand on clique ; `.changed()` le signale.
-                    if ui
-                        .checkbox(&mut visible, i18n::message(label, LANGUAGE, &[]))
-                        .changed()
-                    {
-                        if visible {
-                            window.visible = true;
-                        } else {
-                            window.hide();
-                        }
-                        changed = true;
+                // La ligne des onglets, avec « Quitter » tout à droite.
+                ui.horizontal(|ui| {
+                    // `selectable_value` : un bouton « sélectionné » quand `self.tab` vaut cette
+                    // valeur ; un clic met `self.tab` à cette valeur.
+                    for (tab, label) in [
+                        (ConfigTab::Counters, Text::TabCounters),
+                        (ConfigTab::Shortcuts, Text::TabShortcuts),
+                    ] {
+                        ui.selectable_value(&mut self.tab, tab, i18n::text(label, LANGUAGE));
                     }
-                }
-                let label = i18n::message(Text::RoundCopiesGlobal, LANGUAGE, &[]);
-                // `|=` : « ou » cumulatif (`changed` reste vrai s'il l'était déjà).
-                changed |= ui.checkbox(&mut self.round_copies_global, label).changed();
+                    // `right_to_left` : la suite est placée en partant de la droite.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(i18n::text(Text::Quit, LANGUAGE)).clicked() {
+                            quit(ui.ctx());
+                        }
+                    });
+                });
                 ui.separator();
-                if ui
-                    .button(i18n::message(Text::Quit, LANGUAGE, &[]))
-                    .clicked()
-                {
-                    quit(ui.ctx());
-                }
-                if changed {
-                    self.save();
-                }
+                // Barre de défilement si la fenêtre est trop petite pour tout afficher.
+                egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
+                    ConfigTab::Counters => {
+                        ui.add(egui::Label::new(i18n::text(Text::MenuHint, LANGUAGE)).wrap());
+                        ui.add_space(8.0);
+                        for index in 0..self.windows.len() {
+                            self.unsaved_changes |= self.counter_settings(ui, index);
+                            ui.add_space(12.0);
+                        }
+                    }
+                    ConfigTab::Shortcuts => {
+                        let request = config_window::shortcuts_editor(
+                            ui,
+                            &self.shortcuts,
+                            self.capture,
+                            self.capture_error.as_deref(),
+                            self.mouse_method,
+                            self.mouse_rate,
+                        );
+                        if let Some(request) = request {
+                            self.on_shortcut_request(request);
+                        }
+                    }
+                });
             });
+            // Sauvegarde dès que la souris est relâchée (voir `unsaved_changes`).
+            if self.unsaved_changes && !ui.input(|i| i.pointer.any_down()) {
+                self.save_state();
+                self.unsaved_changes = false;
+            }
         });
+    }
+
+    /// La section de configuration d'un compteur. Renvoie `true` si un réglage a changé.
+    fn counter_settings(&mut self, ui: &mut egui::Ui, index: usize) -> bool {
+        let mut changed = false;
+        let window = &mut self.windows[index];
+        let id = window.id;
+        ui.heading(i18n::text(
+            match id {
+                CounterId::Global => Text::GlobalCounter,
+                CounterId::Round => Text::RoundCounter,
+            },
+            LANGUAGE,
+        ));
+
+        let mut visible = window.visible;
+        // `checkbox` modifie `visible` quand on clique ; `.changed()` le signale.
+        if ui
+            .checkbox(&mut visible, i18n::text(Text::ShowWindow, LANGUAGE))
+            .changed()
+        {
+            if visible {
+                window.visible = true;
+            } else {
+                window.hide();
+            }
+            changed = true;
+        }
+
+        // L'objectif est dans le compteur : on en modifie une copie, puis on la renvoie.
+        let mut goal = self.tracker.counter(id).goal();
+        ui.horizontal(|ui| {
+            ui.label(i18n::text(Text::Goal, LANGUAGE));
+            if ui.add(egui::DragValue::new(&mut goal)).changed() {
+                self.tracker.set_goal(id, goal);
+                changed = true;
+            }
+        });
+
+        match id {
+            CounterId::Global => {
+                changed |= config_window::style_editor(ui, "global_style", &mut self.global_style);
+            }
+            CounterId::Round => {
+                // `|=` : « ou » cumulatif (`changed` reste vrai s'il l'était déjà).
+                changed |= ui
+                    .checkbox(
+                        &mut self.round_copies_global,
+                        i18n::text(Text::RoundCopiesGlobal, LANGUAGE),
+                    )
+                    .changed();
+                // Copie activée : les réglages propres de la partie restent visibles, mais grisés
+                // (`add_enabled_ui(false, ...)` désactive tout ce qui est dessiné dedans).
+                let enabled = !self.round_copies_global;
+                ui.add_enabled_ui(enabled, |ui| {
+                    changed |=
+                        config_window::style_editor(ui, "round_style", &mut self.round_style);
+                });
+            }
+        }
+        changed
+    }
+
+    /// Exécute une demande de l'onglet Raccourcis.
+    fn on_shortcut_request(&mut self, request: ShortcutRequest) {
+        // Toute nouvelle action efface le message d'un refus précédent.
+        self.capture_error = None;
+        match request {
+            ShortcutRequest::StartCapture(target) => {
+                self.capture = Some(target);
+                self.send_to_hotkeys(Control::StartCapture);
+            }
+            ShortcutRequest::CancelCapture => {
+                self.capture = None;
+                self.send_to_hotkeys(Control::CancelCapture);
+            }
+            ShortcutRequest::Remove(index) => {
+                self.shortcuts.remove(index);
+                self.shortcuts_changed();
+            }
+            ShortcutRequest::SetTargets(index, targets) => {
+                if let Command::Count(_, action) = self.shortcuts[index].command {
+                    self.shortcuts[index].command = Command::Count(targets, action);
+                    self.shortcuts_changed();
+                }
+            }
+            ShortcutRequest::RestoreDefaults => {
+                self.shortcuts = hotkeys::default_shortcuts();
+                self.shortcuts_changed();
+            }
+            ShortcutRequest::SetMouseMethod(method) => {
+                self.mouse_method = method;
+                // En passant à l'interrogation, l'abonnement s'arrête : plus d'avertissement.
+                if method == MouseMethod::Polling {
+                    self.mouse_rate = None;
+                }
+                self.send_to_hotkeys(Control::SetMouseMethod(method));
+                self.save_state();
+            }
+        }
+    }
+
+    /// Une capture est terminée : on enregistre la combinaison (ou on explique le refus).
+    fn on_captured(&mut self, held: Vec<Key>, trigger: Key) {
+        // `take()` : la capture est finie, on récupère sa cible et on laisse `None`.
+        let Some(target) = self.capture.take() else {
+            return;
+        };
+        match config_window::apply_capture(&mut self.shortcuts, target, held, trigger) {
+            Ok(()) => self.shortcuts_changed(),
+            Err(CaptureRefused::MainClickNeedsModifier) => {
+                self.capture_error = Some(i18n::text(Text::MainClickNeedsModifier, LANGUAGE));
+            }
+        }
+    }
+
+    /// Après toute modification des raccourcis : le thread du hook reçoit la nouvelle liste,
+    /// le message « Reset ? » suit la touche de validation, et on sauvegarde.
+    fn shortcuts_changed(&mut self) {
+        self.send_to_hotkeys(Control::SetShortcuts(self.shortcuts.clone()));
+        self.confirm_key_name = confirm_key_name(&self.shortcuts);
+        self.save_state();
+    }
+
+    fn send_to_hotkeys(&self, control: Control) {
+        if let Some(hotkeys) = &self.hotkeys {
+            hotkeys.send(control);
+        }
     }
 
     /// Où ouvrir la fenêtre n° `index` : à côté des fenêtres déjà ouvertes, sans les chevaucher.
@@ -300,12 +516,19 @@ impl App {
             },
         };
         let window = &self.windows[index];
+        // Premier plan ou non : réglé dans la configuration. egui compare ce réglage avec
+        // celui de l'image précédente, et ne prévient Windows qu'en cas de changement.
+        let level = if self.style(window.id).always_on_top {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        };
         let builder = egui::ViewportBuilder::default()
             .with_title(window.title.clone())
             .with_position(position)
             .with_inner_size(INITIAL_COUNTER_SIZE)
             .with_decorations(false) // pas de bordure ni de barre de titre
-            .with_always_on_top() // toujours au premier plan
+            .with_window_level(level)
             .with_resizable(false)
             // Fenêtre TOUJOURS transparente (demandé à la création) : on dessine nous-mêmes
             // le fond, ce qui permet les coins arrondis et le fond transparent.
@@ -330,7 +553,7 @@ impl App {
         // fenêtre principale se décoche), on ne quitte pas l'appli.
         if ui.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested()) {
             window.hide();
-            self.save();
+            self.save_state();
             return;
         }
 
@@ -364,6 +587,7 @@ impl App {
 
         // 3) On dessine. Les clics sont notés dans `clicked`, et exécutés APRÈS le dessin.
         let mut clicked = None;
+        let mut open_menu = false;
         // `Frame::NONE.fill(...)` : un panneau sans marge, rempli avec la couleur de fond,
         // avec des coins arrondis (`CornerRadius::same` = le même rayon pour les 4 coins).
         let panel_frame = egui::Frame::NONE
@@ -391,17 +615,204 @@ impl App {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
                 // Clic gauche : +1 sur CE compteur. Clic droit (« secondary ») : -1.
-                // (Provisoire : à l'étape 8, le clic droit ouvrira un menu.)
                 if response.clicked() {
                     clicked = Some(CounterAction::Add(1));
                 }
                 if response.secondary_clicked() {
                     clicked = Some(CounterAction::Subtract(1));
                 }
+
+                // Le bouton du menu, dans le coin en haut à droite, SEULEMENT quand la souris
+                // survole le compteur (il n'apparaît donc pas dans OBS le reste du temps).
+                // Ajouté APRÈS la zone cliquable : il est « au-dessus » et reçoit le clic à sa place.
+                if ui.rect_contains_pointer(rect) && menu_button(ui, rect).clicked() {
+                    open_menu = true;
+                }
             });
         if let Some(action) = clicked {
             let command = Command::Count(Targets::only(id), action);
             self.handle(command, now, ui.ctx());
+        }
+        if open_menu {
+            // Le menu s'ouvre sous le compteur. `outer_rect` : la place de la fenêtre à l'écran.
+            let counter_rect = ui.ctx().input(|i| i.viewport().outer_rect);
+            let screen = ui.ctx().input(|i| i.viewport().monitor_size);
+            // Une ligne par raccourci listé.
+            let rows = hotkeys::shortcuts_for(&self.shortcuts, id)
+                .iter()
+                .map(|(_, shortcuts)| shortcuts.len())
+                .sum();
+            let size = menu_size(rows);
+            self.menu = counter_rect.map(|rect| CounterMenu {
+                index,
+                value: self.tracker.counter(id).value(),
+                position: menu_position(rect, screen, size),
+                size,
+                was_focused: false,
+                native: None,
+            });
+        }
+    }
+
+    /// Le menu d'un compteur, dans sa propre petite fenêtre (un compteur est trop petit pour
+    /// qu'on y dessine un menu : egui ne peut pas dessiner hors de la fenêtre).
+    fn menu_window(&mut self, ctx: &egui::Context, now: Instant) {
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        let index = menu.index;
+        let id = self.windows[index].id;
+        let title = i18n::text(Text::MenuWindowTitle, LANGUAGE);
+        let builder = egui::ViewportBuilder::default()
+            .with_title(title.clone())
+            .with_position(menu.position)
+            .with_inner_size(menu.size)
+            .with_decorations(false)
+            .with_always_on_top()
+            .with_resizable(false)
+            .with_taskbar(false);
+        // Ce que l'utilisateur a choisi dans le menu, exécuté après le dessin.
+        let mut action = None;
+        ctx.show_viewport_immediate(menu_viewport(), builder, |ui, _class| {
+            let Some(menu) = &mut self.menu else {
+                return;
+            };
+            if menu.native.is_none() {
+                menu.native =
+                    NativeWindow::find_by_title(&title).inspect(|w| w.remove_decorations());
+            }
+            // Fermeture : Échap, ou dès que le menu perd le focus (clic ailleurs).
+            let focused = ui.input(|i| i.viewport().focused);
+            if focused == Some(true) {
+                menu.was_focused = true;
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape))
+                || (menu.was_focused && focused == Some(false))
+            {
+                action = Some(MenuAction::Close);
+                return;
+            }
+
+            let frame = egui::Frame::window(ui.style()).corner_radius(0);
+            egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+                ui.strong(i18n::text(
+                    match id {
+                        CounterId::Global => Text::GlobalCounter,
+                        CounterId::Round => Text::RoundCounter,
+                    },
+                    LANGUAGE,
+                ));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(i18n::text(Text::Value, LANGUAGE));
+                    let field = ui.add(egui::DragValue::new(&mut menu.value));
+                    // Entrée dans le champ, ou le bouton « Valider ».
+                    let entered =
+                        field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button(i18n::text(Text::Apply, LANGUAGE)).clicked() || entered {
+                        action = Some(MenuAction::SetValue(menu.value));
+                    }
+                });
+                if ui.button(i18n::text(Text::ResetAction, LANGUAGE)).clicked() {
+                    action = Some(MenuAction::Reset);
+                }
+                // Les réglages d'affichage : grisés pour la partie quand elle copie le global.
+                let display_editable = !(id == CounterId::Round && self.round_copies_global);
+                let mut on_top = effective_style(
+                    id,
+                    &self.global_style,
+                    &self.round_style,
+                    self.round_copies_global,
+                )
+                .always_on_top;
+                ui.add_enabled_ui(display_editable, |ui| {
+                    if ui
+                        .checkbox(&mut on_top, i18n::text(Text::AlwaysOnTop, LANGUAGE))
+                        .changed()
+                    {
+                        action = Some(MenuAction::SetAlwaysOnTop(on_top));
+                    }
+                });
+                ui.separator();
+                // Les raccourcis de ce compteur (lecture seule), pour s'en souvenir en stream.
+                ui.strong(i18n::text(Text::TabShortcuts, LANGUAGE));
+                egui::Grid::new("menu_shortcuts")
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        // Un raccourci par ligne (une cellule de grille ne passe pas à la ligne) ;
+                        // le nom de l'action seulement sur la première.
+                        for (kind, shortcuts) in hotkeys::shortcuts_for(&self.shortcuts, id) {
+                            for (n, shortcut) in shortcuts.iter().enumerate() {
+                                if n == 0 {
+                                    ui.label(i18n::command_kind_name(kind, LANGUAGE));
+                                } else {
+                                    ui.label("");
+                                }
+                                ui.label(i18n::shortcut_name(shortcut, LANGUAGE));
+                                ui.end_row();
+                            }
+                        }
+                    });
+                if ui
+                    .button(i18n::text(Text::EditShortcuts, LANGUAGE))
+                    .clicked()
+                {
+                    action = Some(MenuAction::EditShortcuts);
+                }
+                ui.separator();
+                if ui.button(i18n::text(Text::HideWindow, LANGUAGE)).clicked() {
+                    action = Some(MenuAction::Hide);
+                }
+                if ui
+                    .button(i18n::text(Text::OpenSettings, LANGUAGE))
+                    .clicked()
+                {
+                    action = Some(MenuAction::OpenSettings);
+                }
+            });
+        });
+
+        let Some(action) = action else {
+            return;
+        };
+        match action {
+            MenuAction::SetValue(value) => {
+                if self.tracker.set_value(id, value) {
+                    self.save_state();
+                }
+                self.menu = None;
+            }
+            MenuAction::Reset => {
+                self.handle(Command::Reset(id), now, ctx);
+                self.menu = None;
+            }
+            // Le menu reste ouvert : on voit la case changer.
+            MenuAction::SetAlwaysOnTop(on_top) => {
+                match id {
+                    CounterId::Global => self.global_style.always_on_top = on_top,
+                    CounterId::Round => self.round_style.always_on_top = on_top,
+                }
+                self.save_state();
+            }
+            MenuAction::Hide => {
+                self.windows[index].hide();
+                self.save_state();
+                self.menu = None;
+            }
+            MenuAction::OpenSettings | MenuAction::EditShortcuts => {
+                // Ramène la configuration : sortie de la barre des tâches si elle était réduite,
+                // puis au premier plan, sur l'onglet voulu.
+                ctx.send_viewport_cmd_to(main_viewport(), egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd_to(main_viewport(), egui::ViewportCommand::Focus);
+                self.tab = if action == MenuAction::EditShortcuts {
+                    ConfigTab::Shortcuts
+                } else {
+                    ConfigTab::Counters
+                };
+                self.menu = None;
+            }
+            MenuAction::Close => self.menu = None,
         }
     }
 }
@@ -420,6 +831,45 @@ fn effective_style<'a>(
         CounterId::Global => global,
         CounterId::Round if round_copies_global => global,
         CounterId::Round => round,
+    }
+}
+
+/// Le bouton du menu, dessiné en haut à droite de `rect` : trois points sur un fond discret.
+/// (On dessine les points nous-mêmes : la police intégrée n'a pas de symbole « engrenage ».)
+fn menu_button(ui: &mut egui::Ui, rect: egui::Rect) -> egui::Response {
+    let size = egui::vec2(22.0, 14.0);
+    let button = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - size.x - 4.0, rect.top() + 4.0),
+        size,
+    );
+    let response = ui.interact(
+        button,
+        egui::Id::unique("menu_button"),
+        egui::Sense::click(),
+    );
+    // Plus visible quand la souris est dessus.
+    let alpha = if response.hovered() { 200 } else { 120 };
+    let painter = ui.painter();
+    painter.rect_filled(button, 4.0, egui::Color32::from_black_alpha(alpha));
+    for dx in [-6.0, 0.0, 6.0] {
+        painter.circle_filled(
+            button.center() + egui::vec2(dx, 0.0),
+            1.8,
+            egui::Color32::WHITE,
+        );
+    }
+    response
+}
+
+/// Où ouvrir le menu d'un compteur : sous le compteur, aligné à gauche ; au-dessus s'il
+/// sortirait de l'écran par le bas.
+fn menu_position(counter: egui::Rect, screen: Option<egui::Vec2>, size: egui::Vec2) -> egui::Pos2 {
+    let below = egui::pos2(counter.left(), counter.bottom() + 4.0);
+    let fits = screen.is_none_or(|screen| below.y + size.y <= screen.y);
+    if fits {
+        below
+    } else {
+        egui::pos2(counter.left(), counter.top() - size.y - 4.0)
     }
 }
 
@@ -508,6 +958,11 @@ fn layout_in_current_window(
 impl eframe::App for App {
     /// La couleur avec laquelle les fenêtres sont effacées avant chaque image : TRANSPARENTE.
     /// Le fond visible (avec ses coins arrondis) est dessiné ensuite, par nous.
+    /// Appelée une fois à la fermeture de l'appli : on sauvegarde un dernier réglage éventuel.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_state();
+    }
+
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
@@ -520,86 +975,53 @@ impl eframe::App for App {
         // emprunter `ui` pendant qu'on appelle des méthodes qui modifient `self`.
         let ctx = ui.ctx().clone();
 
-        // On exécute toutes les commandes reçues depuis la dernière image.
-        // `try_recv` ne bloque pas : il renvoie `Ok(commande)` s'il y en a une, une erreur sinon.
-        // `while let` : boucle tant que le motif correspond (ici, tant qu'il y a des commandes).
-        while let Ok(command) = self.commands.try_recv() {
-            self.handle(command, now, &ctx);
+        // On traite tous les événements reçus depuis la dernière image.
+        // `try_recv` ne bloque pas : il renvoie `Ok(événement)` s'il y en a un, une erreur sinon.
+        // `while let` : boucle tant que le motif correspond (ici, tant qu'il y a des événements).
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                HotkeyEvent::Command(command) => self.handle(command, now, &ctx),
+                HotkeyEvent::Captured { held, trigger } => self.on_captured(held, trigger),
+                HotkeyEvent::CaptureCancelled => self.capture = None,
+                HotkeyEvent::MouseRate(rate) => self.mouse_rate = rate,
+            }
         }
 
         self.main_window(&ctx);
         for index in 0..self.windows.len() {
             self.counter_window(&ctx, index, now);
         }
+        self.menu_window(&ctx, now);
     }
 }
 
-/// Raccourcis codés en dur pour l'instant (ils deviendront configurables à l'étape 8).
-fn default_shortcuts() -> Vec<Shortcut> {
-    // Petite fonction locale pour alléger l'écriture de la liste.
-    fn shortcut(held: &[Key], trigger: Key, command: Command) -> Shortcut {
-        Shortcut {
-            // `to_vec()` : copie la tranche dans un nouveau `Vec`.
-            held: held.to_vec(),
-            trigger,
-            command,
-        }
-    }
-    // Les commandes « compter » visent les DEUX compteurs (partie + global), spec M2 / M3.
-    let both = |action| Command::Count(Targets::BOTH, action);
-    // `vec![...]` : macro qui crée un `Vec` avec les éléments donnés.
-    vec![
-        shortcut(&[], Key::NUMPAD_ADD, both(CounterAction::Add(1))),
-        shortcut(&[], Key::NUMPAD_SUBTRACT, both(CounterAction::Subtract(1))),
-        shortcut(
-            &[Key::CONTROL],
-            Key::NUMPAD_ADD,
-            both(CounterAction::Add(5)),
-        ),
-        shortcut(&[], Key::NUMPAD_0, Command::Reset(CounterId::Round)),
-        shortcut(
-            &[Key::CONTROL],
-            Key::NUMPAD_0,
-            Command::Reset(CounterId::Global),
-        ),
-        shortcut(&[], Key::NUMPAD_ENTER, Command::ConfirmReset),
-        shortcut(&[Key::CONTROL], Key::NUMPAD_DECIMAL, Command::UndoReset),
-        // Souris (étape 6).
-        shortcut(
-            &[Key::CONTROL],
-            Key::MOUSE_MIDDLE,
-            both(CounterAction::Add(1)),
-        ),
-        shortcut(&[], Key::MOUSE_X2, both(CounterAction::Add(1))),
-        shortcut(&[], Key::MOUSE_X1, both(CounterAction::Subtract(1))),
-    ]
+/// Le nom de la touche de validation du reset, TIRÉ DES RACCOURCIS : si on la change,
+/// le message « Reset ? » suit. `.find(...)` : le premier raccourci qui valide un reset.
+fn confirm_key_name(shortcuts: &[Shortcut]) -> String {
+    shortcuts
+        .iter()
+        .find(|s| s.command == Command::ConfirmReset)
+        .map(|s| i18n::shortcut_name(s, LANGUAGE))
+        .unwrap_or_else(|| "?".into())
 }
 
 fn main() -> eframe::Result {
-    // On écarte les raccourcis non autorisés (clic gauche / droit sans touche de modification).
+    // On relit la sauvegarde (valeur du global, styles, fenêtres ouvertes, raccourcis).
+    let state_path = storage::state_path();
+    let saved = state_path.as_deref().map(storage::load).unwrap_or_default();
+
+    // On écarte les raccourcis non autorisés (clic gauche / droit sans touche de modification),
+    // au cas où la sauvegarde aurait été modifiée à la main.
     // `partition` : sépare une liste en deux selon une condition (autorisés / refusés).
-    let (shortcuts, refused): (Vec<_>, Vec<_>) = default_shortcuts()
-        .into_iter()
-        .partition(Shortcut::is_allowed);
+    let (shortcuts, refused): (Vec<_>, Vec<_>) =
+        saved.shortcuts.into_iter().partition(Shortcut::is_allowed);
     for shortcut in &refused {
         eprintln!(
             "Raccourci ignoré (clic gauche/droit sans Ctrl, Maj ou Alt) : {}",
             i18n::shortcut_name(shortcut, LANGUAGE)
         );
     }
-    // Le nom de la touche de validation est TIRÉ DES RACCOURCIS : si on la change, le message suit.
-    // `.find(...)` : le premier raccourci qui valide un reset (`None` s'il n'y en a pas).
-    let confirm_key_name = shortcuts
-        .iter()
-        .find(|s| s.command == Command::ConfirmReset)
-        .map(|s| i18n::shortcut_name(s, LANGUAGE))
-        .unwrap_or_else(|| "?".into());
-
-    // On relit la sauvegarde (valeur du global, styles, fenêtres ouvertes).
-    // POUR TESTER un autre style : modifie `global_style` / `round_style` dans le fichier
-    // %APPDATA%\LiterallyACounter\state.json, appli fermée.
-    let state_path = storage::state_path();
-    let saved = state_path.as_deref().map(storage::load).unwrap_or_default();
+    let confirm_key_name = confirm_key_name(&shortcuts);
 
     // La fenêtre hôte (racine) : 1 pixel transparent, qui laisse passer les clics,
     // hors de la barre des tâches, et qui ne prend pas le focus.
@@ -631,6 +1053,11 @@ fn main() -> eframe::Result {
         options,
         // `cc` (« creation context ») donne accès au contexte egui au démarrage.
         Box::new(move |cc| {
+            // egui zoome l'interface avec Ctrl + « - » / « + », y compris ceux du pavé numérique :
+            // nos raccourcis Ctrl + Num ± rétréciraient la configuration quand elle a le focus.
+            cc.egui_ctx
+                .options_mut(|options| options.zoom_with_keyboard = false);
+
             // L'hôte : sans décorations Windows 11, et absent d'Alt + Tab.
             if let Some(host) = NativeWindow::from_window(cc) {
                 host.remove_decorations();
@@ -642,20 +1069,22 @@ fn main() -> eframe::Result {
             // Le contexte egui, pour pouvoir réveiller l'interface depuis le thread des raccourcis.
             let ctx = cc.egui_ctx.clone();
 
-            hotkeys::start(shortcuts, move |command| {
+            // Une copie des raccourcis part dans le thread ; l'appli garde l'original.
+            let hotkeys = hotkeys::start(shortcuts.clone(), saved.mouse_method, move |event| {
                 // `let _ =` : on ignore volontairement le résultat (échec seulement si l'appli est fermée).
-                let _ = sender.send(command);
+                let _ = sender.send(event);
                 // Sans le focus, egui ne redessine pas tout seul : on le réveille.
                 ctx.request_repaint();
             });
 
             Ok(Box::new(App {
                 tracker: Tracker::new(
-                    Counter::new(saved.global_value, GLOBAL_GOAL),
+                    Counter::new(saved.global_value, saved.global_goal),
                     // La partie repart TOUJOURS de 0 (sa valeur n'est jamais sauvegardée).
-                    Counter::new(0, ROUND_GOAL),
+                    Counter::new(0, saved.round_goal),
                 ),
-                commands: receiver,
+                events: receiver,
+                hotkeys,
                 audio: AudioEngine::new(),
                 windows: [
                     CounterWindow::new(CounterId::Global, saved.show_global),
@@ -665,6 +1094,14 @@ fn main() -> eframe::Result {
                 round_style: saved.round_style,
                 round_copies_global: saved.round_copies_global,
                 confirm_key_name,
+                shortcuts,
+                capture: None,
+                capture_error: None,
+                menu: None,
+                mouse_method: saved.mouse_method,
+                mouse_rate: None,
+                tab: ConfigTab::Counters,
+                unsaved_changes: false,
                 state_path,
             }))
         }),
@@ -677,6 +1114,31 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_grows_with_the_shortcuts() {
+        assert!(menu_size(7).y > menu_size(2).y);
+        assert_eq!(menu_size(2).x, MENU_BASE_SIZE.x);
+    }
+
+    #[test]
+    fn menu_opens_below_the_counter() {
+        let counter = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(80.0, 80.0));
+        let screen = Some(egui::vec2(1920.0, 1080.0));
+        assert_eq!(
+            menu_position(counter, screen, MENU_BASE_SIZE),
+            egui::pos2(100.0, 184.0)
+        );
+    }
+
+    #[test]
+    fn menu_opens_above_when_too_low() {
+        let counter = egui::Rect::from_min_size(egui::pos2(100.0, 950.0), egui::vec2(80.0, 80.0));
+        let screen = Some(egui::vec2(1920.0, 1080.0));
+        let size = menu_size(7);
+        let position = menu_position(counter, screen, size);
+        assert_eq!(position.y, 950.0 - size.y - 4.0);
+    }
 
     #[test]
     fn round_copies_the_global_style_when_enabled() {

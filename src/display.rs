@@ -50,6 +50,8 @@ pub struct DisplayStyle {
     #[serde(with = "color_hex")]
     pub alert: Color32,
     pub anchor: Anchor,
+    /// Fenêtre toujours au premier plan (au-dessus du jeu).
+    pub always_on_top: bool,
     /// Marge autour du texte, en points.
     pub margin: f32,
 }
@@ -68,6 +70,7 @@ impl Default for DisplayStyle {
             goal_reached: Color32::from_rgb(80, 200, 120), // vert
             alert: Color32::from_rgb(255, 90, 90),        // rouge
             anchor: Anchor::Center,
+            always_on_top: true,
             margin: 12.0,
         }
     }

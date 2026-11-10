@@ -17,7 +17,7 @@ use crate::reset::ResetConfirmation;
 ///
 /// Un enum SANS donnée sert ici d'identifiant : impossible de désigner un compteur
 /// qui n'existe pas (contrairement à un numéro, qui pourrait valoir 7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CounterId {
     /// Compteur persistant (sauvegardé, reset avec confirmation).
     Global,
@@ -34,7 +34,7 @@ impl CounterId {
 ///
 /// Deux booléens plutôt qu'une liste : la struct reste `Copy` (copiable librement,
 /// comme un nombre), et on ne peut pas citer deux fois le même compteur.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Targets {
     pub global: bool,
     pub round: bool,
@@ -113,6 +113,21 @@ impl Tracker {
             CounterId::Global => &mut self.global,
             CounterId::Round => &mut self.round,
         }
+    }
+
+    /// Fixe la valeur d'un compteur (saisie dans le menu). Renvoie `true` s'il faut
+    /// sauvegarder (le global a changé).
+    pub fn set_value(&mut self, id: CounterId, value: u64) -> bool {
+        self.counter_mut(id).set_value(value);
+        if self.last_reset == Some(id) {
+            self.last_reset = None;
+        }
+        id == CounterId::Global
+    }
+
+    /// Change l'objectif d'un compteur (depuis la configuration).
+    pub fn set_goal(&mut self, id: CounterId, goal: u64) {
+        self.counter_mut(id).set_goal(goal);
     }
 
     /// Une demande de reset du global est-elle affichée ?
@@ -309,6 +324,34 @@ mod tests {
             Outcome::default()
         );
         assert_eq!(values(&t), (15, 1));
+    }
+
+    #[test]
+    fn set_value_saves_only_the_global() {
+        let mut t = tracker(14, 3);
+        assert!(t.set_value(CounterId::Global, 100));
+        assert!(!t.set_value(CounterId::Round, 7));
+        assert_eq!(values(&t), (100, 7));
+    }
+
+    #[test]
+    fn set_value_forgets_the_last_reset() {
+        let mut t = tracker(14, 3);
+        t.handle(Command::Reset(CounterId::Round), Instant::now());
+        t.set_value(CounterId::Round, 9);
+        assert_eq!(
+            t.handle(Command::UndoReset, Instant::now()),
+            Outcome::default()
+        );
+        assert_eq!(values(&t), (14, 9));
+    }
+
+    #[test]
+    fn goals_are_independent() {
+        let mut t = tracker(14, 3);
+        t.set_goal(CounterId::Round, 5);
+        assert_eq!(t.counter(CounterId::Round).goal(), 5);
+        assert_eq!(t.counter(CounterId::Global).goal(), 0);
     }
 
     #[test]
