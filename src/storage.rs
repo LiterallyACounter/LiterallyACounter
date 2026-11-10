@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::display::DisplayStyle;
-use crate::hotkeys::{self, Shortcut};
+use crate::hotkeys::{self, MouseMethod, Shortcut};
 
 const APP_FOLDER: &str = "LiterallyACounter";
 const STATE_FILE: &str = "state.json";
@@ -50,6 +50,8 @@ pub struct SavedState {
     pub show_round: bool,
     /// Les raccourcis. Les touches sont écrites avec leur code Windows (par ex. 107 = Num +).
     pub shortcuts: Vec<Shortcut>,
+    /// Méthode d'écoute de la souris (Raw Input par défaut).
+    pub mouse_method: MouseMethod,
 }
 
 // Valeurs par défaut écrites à la main : les booléens doivent valoir `true` (le `derive`
@@ -66,6 +68,7 @@ impl Default for SavedState {
             show_global: true,
             show_round: true,
             shortcuts: hotkeys::default_shortcuts(),
+            mouse_method: MouseMethod::RawInput,
         }
     }
 }
@@ -91,7 +94,11 @@ pub fn load(path: &Path) -> SavedState {
 
     // `serde_json::from_str` : du texte JSON vers notre struct. Le type voulu est indiqué
     // par l'annotation `Result<SavedState, _>` (`_` : « devine le type de l'erreur »).
-    let parsed: Result<SavedState, _> = serde_json::from_str(&content);
+    // Certains éditeurs (Bloc-notes, PowerShell…) ajoutent au début du fichier une marque
+    // invisible, le « BOM » UTF-8 (caractère U+FEFF), que le lecteur JSON refuse : on l'ignore.
+    // `strip_prefix` : le texte sans ce préfixe, ou `None` s'il n'y est pas.
+    let content = content.strip_prefix('\u{feff}').unwrap_or(&content);
+    let parsed: Result<SavedState, _> = serde_json::from_str(content);
     match parsed {
         Ok(state) => state,
         Err(error) => {
@@ -201,6 +208,19 @@ mod tests {
         assert!(state.show_global && state.show_round);
         // Pas de raccourcis dans l'ancien fichier : ceux par défaut.
         assert_eq!(state.shortcuts, hotkeys::default_shortcuts());
+        assert_eq!(state.mouse_method, MouseMethod::RawInput);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_with_bom_is_read() {
+        // Fichier enregistré « UTF-8 avec BOM » par un éditeur.
+        let dir = test_dir("bom");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, "\u{feff}{\"global_value\": 14}").unwrap();
+        assert_eq!(load(&path).global_value, 14);
+        assert!(!dir.join("state.json.corrupt").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -11,7 +11,7 @@ use egui::color_picker::{Alpha, color_edit_button_srgba};
 use crate::LANGUAGE;
 use crate::command::{Command, CommandKind};
 use crate::display::{Anchor, DisplayStyle};
-use crate::hotkeys::{self, Key, Shortcut};
+use crate::hotkeys::{self, Key, MouseMethod, Shortcut};
 use crate::i18n::{self, Text};
 use crate::tracker::{CounterId, Targets};
 
@@ -140,6 +140,7 @@ pub enum ShortcutRequest {
     Remove(usize),
     SetTargets(usize, Targets),
     RestoreDefaults,
+    SetMouseMethod(MouseMethod),
 }
 
 /// Pourquoi une combinaison capturée est refusée.
@@ -194,16 +195,55 @@ pub fn apply_capture(
 
 /// L'onglet Raccourcis : une section par action, avec ses raccourcis.
 /// `capturing` : la capture en cours ; `error` : le message d'un refus récent.
+/// `mouse_rate` : fréquence des événements souris si elle est élevée (protection automatique).
 pub fn shortcuts_editor(
     ui: &mut egui::Ui,
     shortcuts: &[Shortcut],
     capturing: Option<CaptureTarget>,
     error: Option<&str>,
+    mouse_method: MouseMethod,
+    mouse_rate: Option<u32>,
 ) -> Option<ShortcutRequest> {
     let mut request = None;
     // Pendant une capture, tous les autres boutons sont désactivés.
     let idle = capturing.is_none();
     let warning = ui.visuals().warn_fg_color;
+
+    // Protection automatique : bandeau si la souris envoie trop d'événements (Raw Input).
+    if let Some(rate) = mouse_rate {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            let text = i18n::message(
+                Text::MouseRateWarning,
+                LANGUAGE,
+                &[("rate", &rate.to_string())],
+            );
+            ui.add(egui::Label::new(egui::RichText::new(text).color(warning)).wrap());
+            if ui.button(t(Text::SwitchToPolling)).clicked() {
+                request = Some(ShortcutRequest::SetMouseMethod(MouseMethod::Polling));
+            }
+        });
+        ui.add_space(8.0);
+    }
+
+    // Méthode d'écoute de la souris.
+    ui.horizontal_wrapped(|ui| {
+        ui.label(t(Text::MouseMethodLabel));
+        for (method, label) in [
+            (MouseMethod::RawInput, Text::MouseRawInput),
+            (MouseMethod::Polling, Text::MousePolling),
+        ] {
+            if ui
+                .add_enabled(
+                    idle,
+                    egui::RadioButton::new(mouse_method == method, t(label)),
+                )
+                .clicked()
+            {
+                request = Some(ShortcutRequest::SetMouseMethod(method));
+            }
+        }
+    });
+    ui.add_space(8.0);
 
     ui.add(egui::Label::new(t(Text::ShortcutsHelp)).wrap());
     if let Some(error) = error {
@@ -240,6 +280,11 @@ pub fn shortcuts_editor(
                         .clicked()
                     {
                         request = Some(ShortcutRequest::StartCapture(target));
+                    }
+                    // Molette en mode interrogation : le raccourci ne peut pas fonctionner.
+                    if mouse_method == MouseMethod::Polling && shortcut.uses_wheel() {
+                        ui.label(egui::RichText::new(" ! ").strong().color(warning))
+                            .on_hover_text(t(Text::WheelNeedsRawInput));
                     }
                     if conflicts[index] {
                         // « ! » plutôt que « ⚠ », absent de la police intégrée d'egui.

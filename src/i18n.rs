@@ -131,6 +131,18 @@ pub enum Text {
     OpenSettings,
     /// Rappel du menu dans la configuration.
     MenuHint,
+    /// Choix de la méthode d'écoute de la souris.
+    MouseMethodLabel,
+    /// Option Raw Input.
+    MouseRawInput,
+    /// Option interrogation.
+    MousePolling,
+    /// Raccourci de molette inactif en mode interrogation.
+    WheelNeedsRawInput,
+    /// Bandeau de protection. Emplacement : `{rate}` (événements par seconde).
+    MouseRateWarning,
+    /// Bouton du bandeau.
+    SwitchToPolling,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -265,6 +277,28 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::MenuHint, Language::English) => {
             "A counter's menu (set value, reset…) opens with the ••• button shown when the mouse hovers it."
         }
+        (Text::MouseMethodLabel, Language::French) => "Écoute de la souris :",
+        (Text::MouseMethodLabel, Language::English) => "Mouse listening:",
+        (Text::MouseRawInput, Language::French) => "Raw Input (recommandé)",
+        (Text::MouseRawInput, Language::English) => "Raw Input (recommended)",
+        (Text::MousePolling, Language::French) => {
+            "Interrogation (plus économe, sans crans de molette)"
+        }
+        (Text::MousePolling, Language::English) => "Polling (lighter, no wheel notches)",
+        (Text::WheelNeedsRawInput, Language::French) => {
+            "Inactif : les crans de molette demandent l'écoute Raw Input."
+        }
+        (Text::WheelNeedsRawInput, Language::English) => {
+            "Inactive: wheel notches need Raw Input listening."
+        }
+        (Text::MouseRateWarning, Language::French) => {
+            "Ta souris envoie {rate} événements par seconde à l'appli, ce qui peut coûter du processeur. L'interrogation est plus économe, mais sans crans de molette."
+        }
+        (Text::MouseRateWarning, Language::English) => {
+            "Your mouse sends {rate} events per second to the app, which may cost CPU. Polling is lighter, but has no wheel notches."
+        }
+        (Text::SwitchToPolling, Language::French) => "Passer à l'interrogation",
+        (Text::SwitchToPolling, Language::English) => "Switch to polling",
     }
 }
 
@@ -309,6 +343,14 @@ pub fn key_name(key: Key, language: Language) -> String {
         Key::MOUSE_X1 => "Mouse X1 (back)",
         Key::MOUSE_X2 if french => "Souris X2 (avant)",
         Key::MOUSE_X2 => "Mouse X2 (forward)",
+        Key::WHEEL_UP if french => "Molette haut",
+        Key::WHEEL_UP => "Wheel up",
+        Key::WHEEL_DOWN if french => "Molette bas",
+        Key::WHEEL_DOWN => "Wheel down",
+        Key::WHEEL_LEFT if french => "Molette gauche",
+        Key::WHEEL_LEFT => "Wheel left",
+        Key::WHEEL_RIGHT if french => "Molette droite",
+        Key::WHEEL_RIGHT => "Wheel right",
         // Les autres touches sont calculées plus bas.
         _ => "",
     };
@@ -416,6 +458,21 @@ mod tests {
         assert_eq!(
             shortcut_name(&shortcut, Language::French),
             "Ctrl + Clic molette"
+        );
+    }
+
+    #[test]
+    fn wheel_names() {
+        assert_eq!(key_name(Key::WHEEL_UP, Language::French), "Molette haut");
+        assert_eq!(key_name(Key::WHEEL_DOWN, Language::English), "Wheel down");
+        let shortcut = Shortcut {
+            held: vec![Key::CONTROL],
+            trigger: Key::WHEEL_UP,
+            command: Command::UndoReset,
+        };
+        assert_eq!(
+            shortcut_name(&shortcut, Language::French),
+            "Ctrl + Molette haut"
         );
     }
 

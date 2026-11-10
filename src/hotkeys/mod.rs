@@ -7,12 +7,15 @@
 //!   indépendante du système, donc testable automatiquement ;
 //! - `mouse.rs` : la logique PURE de l'interrogation des boutons de souris ;
 //! - `capture.rs` : la logique PURE de la capture d'un raccourci « à l'appui » ;
+//! - `raw_mouse.rs` : la logique PURE de l'écoute de la souris par Raw Input (boutons, molette,
+//!   mesure de fréquence) ;
 //! - `windows.rs` : le branchement sur Windows (hook clavier + interrogation de la souris),
 //!   compilé uniquement sous Windows.
 
 mod capture;
 mod matcher;
 mod mouse;
+mod raw_mouse;
 
 // `#[cfg(windows)]` : ce module n'est compilé que sous Windows.
 // Pour Linux/Mac, on ajoutera plus tard d'autres modules derrière la même fonction `start`.
@@ -37,6 +40,22 @@ pub enum HotkeyEvent {
     Captured { held: Vec<Key>, trigger: Key },
     /// La capture a été annulée (Échap).
     CaptureCancelled,
+    /// Fréquence des événements souris : `Some(n)` si elle est élevée (n par seconde),
+    /// `None` quand elle redevient normale.
+    MouseRate(Option<u32>),
+}
+
+/// Comment l'appli écoute la souris (spec F5, « Méthode d'écoute »).
+///
+/// `#[serde(rename_all = "snake_case")]` : écrit `"raw_input"` / `"polling"` dans la sauvegarde.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseMethod {
+    /// Abonnement Raw Input : aucun clic manqué, crans de molette disponibles.
+    #[default]
+    RawInput,
+    /// Interrogation des boutons toutes les ~15 ms : coût fixe, sans crans de molette.
+    Polling,
 }
 
 /// Ce que l'appli demande au thread des raccourcis, pendant qu'il tourne.
@@ -48,6 +67,8 @@ pub enum Control {
     StartCapture,
     /// Abandonner la capture en cours.
     CancelCapture,
+    /// Changer de méthode d'écoute de la souris.
+    SetMouseMethod(MouseMethod),
 }
 
 /// Une touche du clavier, identifiée par son code « virtual-key » Windows.
@@ -89,12 +110,32 @@ impl Key {
     /// Bouton latéral « avant ».
     pub const MOUSE_X2: Key = Key(0x06);
 
-    /// Est-ce un bouton de souris ?
-    pub fn is_mouse(self) -> bool {
+    // Crans de molette : pas de code Windows (ce ne sont pas des touches), on leur attribue
+    // des codes à nous, hors de la plage des codes Windows. Un cran = un appui + un relâchement.
+    pub const WHEEL_UP: Key = Key(0x201);
+    pub const WHEEL_DOWN: Key = Key(0x202);
+    pub const WHEEL_LEFT: Key = Key(0x203);
+    pub const WHEEL_RIGHT: Key = Key(0x204);
+
+    /// Est-ce un bouton de souris (hors molette) ?
+    pub fn is_mouse_button(self) -> bool {
         matches!(
             self,
             Key::MOUSE_LEFT | Key::MOUSE_RIGHT | Key::MOUSE_MIDDLE | Key::MOUSE_X1 | Key::MOUSE_X2
         )
+    }
+
+    /// Est-ce un cran de molette ?
+    pub fn is_wheel(self) -> bool {
+        matches!(
+            self,
+            Key::WHEEL_UP | Key::WHEEL_DOWN | Key::WHEEL_LEFT | Key::WHEEL_RIGHT
+        )
+    }
+
+    /// Vient-elle de la souris (bouton ou molette) ?
+    pub fn is_mouse(self) -> bool {
+        self.is_mouse_button() || self.is_wheel()
     }
 
     /// Est-ce une touche de modification (Ctrl, Maj, Alt) ?
@@ -129,8 +170,8 @@ impl Shortcut {
     }
 }
 
-/// Les boutons de souris utilisés par au moins un raccourci, sans doublon.
-/// Liste vide → l'appli n'interrogera pas du tout la souris.
+/// Les boutons et crans de souris utilisés par au moins un raccourci, sans doublon.
+/// Liste vide → l'appli n'écoutera pas du tout la souris.
 pub fn mouse_keys_used(shortcuts: &[Shortcut]) -> Vec<Key> {
     let mut keys: Vec<Key> = shortcuts
         .iter()
@@ -154,6 +195,11 @@ pub const ALL_MOUSE_BUTTONS: [Key; 5] = [
 ];
 
 impl Shortcut {
+    /// Le raccourci utilise-t-il la molette ? (Inactif en mode interrogation.)
+    pub fn uses_wheel(&self) -> bool {
+        self.trigger.is_wheel() || self.held.iter().any(|k| k.is_wheel())
+    }
+
     /// Les deux raccourcis utilisent-ils exactement les mêmes touches ?
     /// L'ordre des touches tenues ne compte pas (« Ctrl + Maj + A » = « Maj + Ctrl + A »).
     pub fn same_keys(&self, other: &Shortcut) -> bool {
@@ -304,6 +350,18 @@ mod tests {
     }
 
     #[test]
+    fn wheel_keys_are_mouse_keys_but_not_buttons() {
+        assert!(Key::WHEEL_UP.is_mouse());
+        assert!(!Key::WHEEL_UP.is_mouse_button());
+        assert!(shortcut(&[Key::CONTROL], Key::WHEEL_DOWN).uses_wheel());
+        assert!(!shortcut(&[], Key::MOUSE_X1).uses_wheel());
+        assert_eq!(
+            mouse_keys_used(&[shortcut(&[], Key::WHEEL_UP)]),
+            vec![Key::WHEEL_UP]
+        );
+    }
+
+    #[test]
     fn no_mouse_shortcut_means_no_mouse_key() {
         let shortcuts = vec![shortcut(&[Key::CONTROL], Key::NUMPAD_ADD)];
         assert!(mouse_keys_used(&shortcuts).is_empty());
@@ -315,6 +373,7 @@ mod tests {
 #[cfg(not(windows))]
 pub fn start(
     _shortcuts: Vec<Shortcut>,
+    _method: MouseMethod,
     _on_event: impl Fn(HotkeyEvent) + Send + 'static,
 ) -> Option<HotkeyHandle> {
     eprintln!("Raccourcis globaux non pris en charge sur ce système.");

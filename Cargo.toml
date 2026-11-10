@@ -36,6 +36,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",       # hook clavier
     "Win32_UI_Input_KeyboardAndMouse",    # état des touches
+    "Win32_UI_Input",                     # souris par Raw Input (boutons, molette)
+    "Win32_Graphics_Gdi",                 # fenêtre invisible qui reçoit Raw Input
     "Win32_System_LibraryLoader",         # hook clavier
     "Win32_System_Threading",             # identifiant du thread du hook (pour le réveiller)
     "Win32_Graphics_Dwm",                 # liseré, coins arrondis, ombre (Windows 11)

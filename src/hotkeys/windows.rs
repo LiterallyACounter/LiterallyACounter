@@ -1,5 +1,10 @@
-//! Branchement Windows : un « hook clavier bas niveau » (WH_KEYBOARD_LL), et l'interrogation
-//! régulière des boutons de souris (voir `mouse.rs`).
+//! Branchement Windows : un « hook clavier bas niveau » (WH_KEYBOARD_LL), et l'écoute de la
+//! souris, au choix :
+//! - par Raw Input (par défaut) : une fenêtre invisible reçoit une copie des événements souris
+//!   (voir `raw_mouse.rs`) ;
+//! - par interrogation régulière des boutons (voir `mouse.rs`).
+//!
+//! Dans les deux cas, on n'écoute la souris QUE si un raccourci l'utilise (ou pendant une capture).
 //!
 //! Principe du clavier :
 //! - Windows appelle notre fonction `hook_proc` à CHAQUE frappe, quelle que soit l'appli au premier plan.
@@ -20,21 +25,30 @@
 use std::cell::RefCell;
 use std::ptr::{null, null_mut};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Instant;
 
-use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+use windows_sys::Win32::UI::Input::{
+    GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT,
+    RIDEV_INPUTSINK, RIDEV_REMOVE, RIM_TYPEMOUSE, RegisterRawInputDevices,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, KillTimer, LLKHF_EXTENDED, MSG,
-    PM_NOREMOVE, PeekMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW, WH_KEYBOARD_LL,
-    WM_APP, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, HC_ACTION,
+    HWND_MESSAGE, KBDLLHOOKSTRUCT, KillTimer, LLKHF_EXTENDED, MSG, PM_NOREMOVE, PeekMessageW,
+    PostThreadMessageW, RegisterClassW, SetTimer, SetWindowsHookExW, WH_KEYBOARD_LL, WM_APP,
+    WM_INPUT, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW,
 };
 
 use super::capture::{Capture, CaptureStep};
 use super::matcher::Matcher;
 use super::mouse::{ButtonChange, MousePoller};
-use super::{ALL_MOUSE_BUTTONS, Control, HotkeyEvent, Key, Shortcut, mouse_keys_used};
+use super::raw_mouse::{
+    HORIZONTAL_WHEEL_FLAG, RateMonitor, RateReport, WHEEL_FLAG, WheelAccumulator, button_changes,
+};
+use super::{ALL_MOUSE_BUTTONS, Control, HotkeyEvent, Key, MouseMethod, Shortcut, mouse_keys_used};
 
 /// Intervalle d'interrogation des boutons de souris, en millisecondes.
 /// (Le minuteur de Windows a une précision d'environ 15,6 ms : inutile de demander moins.)
@@ -62,9 +76,19 @@ impl HotkeyHandle {
 /// L'état dont `hook_proc` a besoin.
 struct HookState {
     matcher: Matcher,
-    /// Les boutons de souris utilisés par les raccourcis.
+    /// Méthode d'écoute de la souris.
+    method: MouseMethod,
+    /// Un raccourci utilise-t-il la souris (bouton ou molette) ?
+    uses_mouse: bool,
+    /// Les boutons de souris utilisés par les raccourcis (pour l'interrogation).
     mouse_buttons: Vec<Key>,
     mouse_poller: MousePoller,
+    /// La fenêtre invisible qui reçoit les événements Raw Input (nulle si sa création a échoué).
+    raw_window: HWND,
+    /// L'abonnement Raw Input est-il actif ?
+    raw_subscribed: bool,
+    wheel: WheelAccumulator,
+    rate: RateMonitor,
     /// Le minuteur d'interrogation de la souris, s'il tourne : son identifiant, attribué par
     /// Windows (sans fenêtre, c'est Windows qui le choisit) et nécessaire pour l'arrêter.
     mouse_timer: Option<usize>,
@@ -78,6 +102,18 @@ struct HookState {
 }
 
 impl HookState {
+    /// Prend en compte une nouvelle liste de raccourcis.
+    fn set_shortcuts(&mut self, shortcuts: Vec<Shortcut>) {
+        let mouse_keys = mouse_keys_used(&shortcuts);
+        self.uses_mouse = !mouse_keys.is_empty();
+        // `into_iter().filter(...)` : on garde les boutons (la molette ne s'interroge pas).
+        self.mouse_buttons = mouse_keys
+            .into_iter()
+            .filter(|key| key.is_mouse_button())
+            .collect();
+        self.matcher = Matcher::new(shortcuts);
+    }
+
     /// Les boutons à interroger : ceux des raccourcis, ou TOUS pendant une capture.
     fn watched_buttons(&self) -> &[Key] {
         if self.capture.is_some() {
@@ -87,10 +123,26 @@ impl HookState {
         }
     }
 
-    /// Démarre ou arrête le minuteur de la souris selon les besoins : si aucun bouton n'est
-    /// à surveiller, l'appli n'interroge pas du tout la souris.
+    /// Met l'écoute de la souris dans le bon état : selon la méthode choisie, et SEULEMENT
+    /// si un raccourci utilise la souris (ou pendant une capture).
+    fn update_mouse(&mut self) {
+        let needed = self.uses_mouse || self.capture.is_some();
+        let raw_wanted = needed && self.method == MouseMethod::RawInput;
+        if raw_wanted != self.raw_subscribed {
+            self.raw_subscribed = set_raw_subscription(self.raw_window, raw_wanted) && raw_wanted;
+            // Abonnement arrêté : plus de mesure, on efface un éventuel avertissement.
+            if !self.raw_subscribed && self.rate.reset() {
+                (self.on_event)(HotkeyEvent::MouseRate(None));
+            }
+            self.wheel = WheelAccumulator::default();
+        }
+        self.update_mouse_timer();
+    }
+
+    /// Démarre ou arrête le minuteur d'interrogation (méthode « interrogation » seulement) :
+    /// si aucun bouton n'est à surveiller, l'appli n'interroge pas du tout la souris.
     fn update_mouse_timer(&mut self) {
-        let needed = !self.watched_buttons().is_empty();
+        let needed = self.method == MouseMethod::Polling && !self.watched_buttons().is_empty();
         match self.mouse_timer {
             None if needed => {
                 // SÉCURITÉ : minuteur rattaché au thread (fenêtre nulle, pas de fonction de rappel).
@@ -127,6 +179,7 @@ thread_local! {
 ///   Le compilateur vérifie ces deux garanties : c'est ce qui rend les threads sûrs en Rust.
 pub fn start(
     shortcuts: Vec<Shortcut>,
+    method: MouseMethod,
     on_event: impl Fn(HotkeyEvent) + Send + 'static,
 ) -> Option<HotkeyHandle> {
     let (controls_sender, controls) = mpsc::channel();
@@ -137,19 +190,27 @@ pub fn start(
     let spawn_result = std::thread::Builder::new()
         .name("hotkeys".into())
         .spawn(move || {
+            let raw_window = create_raw_window();
             STATE.with(|state| {
                 let mut hook_state = HookState {
-                    mouse_buttons: mouse_keys_used(&shortcuts),
-                    matcher: Matcher::new(shortcuts),
+                    matcher: Matcher::new(Vec::new()),
+                    method,
+                    uses_mouse: false,
+                    mouse_buttons: Vec::new(),
                     mouse_poller: MousePoller::default(),
+                    raw_window,
+                    raw_subscribed: false,
+                    wheel: WheelAccumulator::default(),
+                    rate: RateMonitor::default(),
                     mouse_timer: None,
                     capture: None,
                     controls,
                     on_event: Box::new(on_event),
                 };
-                // Souris : SEULEMENT si un raccourci l'utilise. Le minuteur nous enverra alors
-                // un message WM_TIMER toutes les ~15 ms, traité dans la boucle de messages.
-                hook_state.update_mouse_timer();
+                hook_state.set_shortcuts(shortcuts);
+                // Souris : SEULEMENT si un raccourci l'utilise (abonnement Raw Input, ou minuteur
+                // d'interrogation qui envoie un message WM_TIMER toutes les ~15 ms).
+                hook_state.update_mouse();
                 *state.borrow_mut() = Some(hook_state);
             });
 
@@ -178,7 +239,14 @@ pub fn start(
                 match msg.message {
                     WM_TIMER => poll_mouse(),
                     WM_APP => apply_controls(),
+                    WM_INPUT => on_raw_input(msg.lParam),
                     _ => {}
+                }
+                // Les messages destinés à une fenêtre (la nôtre, invisible) lui sont transmis :
+                // Windows demande notamment de passer WM_INPUT à `DefWindowProcW` (nettoyage).
+                if !msg.hwnd.is_null() {
+                    // SÉCURITÉ : `msg` vient d'être rempli par `GetMessageW`.
+                    unsafe { DispatchMessageW(&msg) };
                 }
             }
         });
@@ -207,15 +275,17 @@ fn apply_controls() {
         let controls: Vec<Control> = state.controls.try_iter().collect();
         for control in controls {
             match control {
-                Control::SetShortcuts(shortcuts) => {
-                    state.mouse_buttons = mouse_keys_used(&shortcuts);
-                    state.matcher = Matcher::new(shortcuts);
-                }
+                Control::SetShortcuts(shortcuts) => state.set_shortcuts(shortcuts),
                 Control::StartCapture => state.capture = Some(Capture::default()),
                 Control::CancelCapture => state.capture = None,
+                Control::SetMouseMethod(method) => {
+                    state.method = method;
+                    // On repart d'un état propre pour l'interrogation.
+                    state.mouse_poller = MousePoller::default();
+                }
             }
         }
-        state.update_mouse_timer();
+        state.update_mouse();
     });
 }
 
@@ -304,8 +374,121 @@ fn finish_capture(state: &mut HookState, step: CaptureStep) {
         CaptureStep::Cancelled => HotkeyEvent::CaptureCancelled,
     };
     state.capture = None;
-    state.update_mouse_timer();
+    state.update_mouse();
     (state.on_event)(event);
+}
+
+/// Crée la fenêtre invisible (« message-only » : ni affichée, ni dans la liste des fenêtres)
+/// qui recevra les événements Raw Input. Renvoie une fenêtre nulle en cas d'échec.
+fn create_raw_window() -> HWND {
+    // Nom de la « classe » de fenêtre, en UTF-16 terminé par un 0.
+    let class: Vec<u16> = "LiterallyACounterRawInput\0".encode_utf16().collect();
+    // SÉCURITÉ : `class` vit jusqu'à la fin de la fonction ; la classe est enregistrée avec
+    // la fonction standard de Windows (`DefWindowProcW`) pour traiter ses messages.
+    unsafe {
+        let window_class = WNDCLASSW {
+            lpfnWndProc: Some(DefWindowProcW),
+            hInstance: GetModuleHandleW(null()),
+            lpszClassName: class.as_ptr(),
+            // `..zeroed()` : tous les autres champs à zéro (valeurs par défaut de Windows).
+            ..std::mem::zeroed()
+        };
+        RegisterClassW(&window_class);
+        CreateWindowExW(
+            0,
+            class.as_ptr(),
+            class.as_ptr(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            HWND_MESSAGE, // fenêtre « message-only »
+            null_mut(),
+            window_class.hInstance,
+            null(),
+        )
+    }
+}
+
+/// S'abonne (ou se désabonne) aux événements de la souris par Raw Input.
+/// Renvoie `true` si Windows a accepté.
+fn set_raw_subscription(window: HWND, subscribe: bool) -> bool {
+    if window.is_null() {
+        return false;
+    }
+    let device = RAWINPUTDEVICE {
+        usUsagePage: 0x01, // « Generic Desktop »
+        usUsage: 0x02,     // souris
+        // INPUTSINK : recevoir les événements même quand l'appli n'a pas le focus (cas du jeu).
+        // REMOVE : se désabonner (la fenêtre doit alors être nulle).
+        dwFlags: if subscribe {
+            RIDEV_INPUTSINK
+        } else {
+            RIDEV_REMOVE
+        },
+        hwndTarget: if subscribe { window } else { null_mut() },
+    };
+    // SÉCURITÉ : `device` est valide pendant l'appel, et on indique sa taille exacte.
+    unsafe { RegisterRawInputDevices(&device, 1, size_of::<RAWINPUTDEVICE>() as u32) != 0 }
+}
+
+/// Un événement Raw Input est arrivé (WM_INPUT) : boutons et crans de molette.
+fn on_raw_input(lparam: LPARAM) {
+    let mut raw = RAWINPUT::default();
+    let mut size = size_of::<RAWINPUT>() as u32;
+    // SÉCURITÉ : `lparam` est la poignée fournie avec WM_INPUT ; `raw` peut recevoir `size`
+    // octets (un événement souris tient dans un RAWINPUT).
+    let read = unsafe {
+        GetRawInputData(
+            lparam as HRAWINPUT,
+            RID_INPUT,
+            (&mut raw as *mut RAWINPUT).cast(),
+            &mut size,
+            size_of::<RAWINPUTHEADER>() as u32,
+        )
+    };
+    if read == u32::MAX || raw.header.dwType != RIM_TYPEMOUSE {
+        return;
+    }
+    // SÉCURITÉ : l'en-tête dit que c'est un événement souris, donc `data.mouse` est la bonne
+    // interprétation de cette « union » (plusieurs types possibles au même endroit).
+    let (flags, data) = unsafe {
+        let buttons = raw.data.mouse.Anonymous.Anonymous;
+        // La rotation de la molette est un nombre SIGNÉ rangé dans un champ non signé.
+        (buttons.usButtonFlags, buttons.usButtonData as i16)
+    };
+    with_state(|state| {
+        if !state.raw_subscribed {
+            return;
+        }
+        // Protection : mesure de la fréquence des événements (mouvements compris).
+        if let Some(report) = state.rate.event(Instant::now()) {
+            let rate = match report {
+                RateReport::High(rate) => Some(rate),
+                RateReport::Normal => None,
+            };
+            (state.on_event)(HotkeyEvent::MouseRate(rate));
+        }
+        for change in button_changes(flags) {
+            match change {
+                ButtonChange::Pressed(button) => key_down(state, button),
+                ButtonChange::Released(button) => key_up(state, button),
+            }
+        }
+        // Un cran de molette = un appui immédiatement suivi d'un relâchement.
+        let mut notches = Vec::new();
+        if flags & WHEEL_FLAG != 0 {
+            notches.extend(state.wheel.add_vertical(data));
+        }
+        if flags & HORIZONTAL_WHEEL_FLAG != 0 {
+            notches.extend(state.wheel.add_horizontal(data));
+        }
+        for key in notches {
+            key_down(state, key);
+            key_up(state, key);
+        }
+    });
 }
 
 /// Demande à Windows si une touche est physiquement enfoncée.

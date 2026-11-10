@@ -28,7 +28,7 @@ use config_window::{CaptureRefused, CaptureTarget, ShortcutRequest};
 use counter::{Counter, CounterAction};
 use display::DisplayStyle;
 use eframe::egui;
-use hotkeys::{Control, HotkeyEvent, HotkeyHandle, Key, Shortcut};
+use hotkeys::{Control, HotkeyEvent, HotkeyHandle, Key, MouseMethod, Shortcut};
 use i18n::{Language, Text};
 use native_window::NativeWindow;
 use storage::SavedState;
@@ -167,6 +167,10 @@ struct App {
     unsaved_changes: bool,
     /// Le menu d'un compteur, s'il est ouvert.
     menu: Option<CounterMenu>,
+    /// Méthode d'écoute de la souris.
+    mouse_method: MouseMethod,
+    /// Fréquence des événements souris, si elle est élevée (protection automatique).
+    mouse_rate: Option<u32>,
     /// Fichier de sauvegarde (`None` si le système n'a pas de dossier de configuration).
     state_path: Option<PathBuf>,
 }
@@ -216,6 +220,7 @@ impl App {
             show_global: global.visible,
             show_round: round.visible,
             shortcuts: self.shortcuts.clone(),
+            mouse_method: self.mouse_method,
         };
         if let Err(error) = storage::save(path, &state) {
             eprintln!("Sauvegarde impossible : {error}");
@@ -306,6 +311,8 @@ impl App {
                             &self.shortcuts,
                             self.capture,
                             self.capture_error.as_deref(),
+                            self.mouse_method,
+                            self.mouse_rate,
                         );
                         if let Some(request) = request {
                             self.on_shortcut_request(request);
@@ -408,6 +415,15 @@ impl App {
             ShortcutRequest::RestoreDefaults => {
                 self.shortcuts = hotkeys::default_shortcuts();
                 self.shortcuts_changed();
+            }
+            ShortcutRequest::SetMouseMethod(method) => {
+                self.mouse_method = method;
+                // En passant à l'interrogation, l'abonnement s'arrête : plus d'avertissement.
+                if method == MouseMethod::Polling {
+                    self.mouse_rate = None;
+                }
+                self.send_to_hotkeys(Control::SetMouseMethod(method));
+                self.save_state();
             }
         }
     }
@@ -917,6 +933,7 @@ impl eframe::App for App {
                 HotkeyEvent::Command(command) => self.handle(command, now, &ctx),
                 HotkeyEvent::Captured { held, trigger } => self.on_captured(held, trigger),
                 HotkeyEvent::CaptureCancelled => self.capture = None,
+                HotkeyEvent::MouseRate(rate) => self.mouse_rate = rate,
             }
         }
 
@@ -1003,7 +1020,7 @@ fn main() -> eframe::Result {
             let ctx = cc.egui_ctx.clone();
 
             // Une copie des raccourcis part dans le thread ; l'appli garde l'original.
-            let hotkeys = hotkeys::start(shortcuts.clone(), move |event| {
+            let hotkeys = hotkeys::start(shortcuts.clone(), saved.mouse_method, move |event| {
                 // `let _ =` : on ignore volontairement le résultat (échec seulement si l'appli est fermée).
                 let _ = sender.send(event);
                 // Sans le focus, egui ne redessine pas tout seul : on le réveille.
@@ -1031,6 +1048,8 @@ fn main() -> eframe::Result {
                 capture: None,
                 capture_error: None,
                 menu: None,
+                mouse_method: saved.mouse_method,
+                mouse_rate: None,
                 tab: ConfigTab::Counters,
                 unsaved_changes: false,
                 state_path,
