@@ -34,6 +34,9 @@ const STATE_FILE: &str = "state.json";
 pub struct SavedState {
     /// Valeur du compteur global.
     pub global_value: u64,
+    /// Objectifs (0 = pas d'objectif). Celui de la partie est sauvegardé, pas sa valeur.
+    pub global_goal: u64,
+    pub round_goal: u64,
     /// Affichage du global.
     pub global_style: DisplayStyle,
     /// Affichage propre de la partie : utilisé seulement quand la copie est désactivée,
@@ -52,6 +55,8 @@ impl Default for SavedState {
     fn default() -> Self {
         Self {
             global_value: 0,
+            global_goal: 0,
+            round_goal: 0,
             global_style: DisplayStyle::default(),
             round_style: DisplayStyle::round_default(),
             round_copies_global: true,
@@ -199,6 +204,8 @@ mod tests {
         assert!(json.starts_with(
             "{
   \"global_value\": 0,
+  \"global_goal\": 0,
+  \"round_goal\": 0,
   \"global_style\": {"
         ));
         assert!(json.contains("\"background\": \"#1E1E1EFF\""));

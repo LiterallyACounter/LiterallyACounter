@@ -65,6 +65,11 @@ impl Counter {
         self.goal
     }
 
+    /// Change l'objectif (0 = pas d'objectif). La valeur, elle, ne bouge pas.
+    pub fn set_goal(&mut self, goal: u64) {
+        self.goal = goal;
+    }
+
     /// L'objectif est-il atteint ?
     /// `None` s'il n'y a pas d'objectif, `Some(true)` si atteint ou dépassé, `Some(false)` sinon.
     pub fn goal_reached(&self) -> Option<bool> {
@@ -151,6 +156,15 @@ mod tests {
         let mut counter = Counter::default();
         counter.apply(CounterAction::Subtract(1));
         assert_eq!(counter.value(), 0);
+    }
+
+    #[test]
+    fn set_goal_keeps_the_value() {
+        let mut counter = Counter::new(7, 10);
+        counter.set_goal(5);
+        assert_eq!(counter.goal(), 5);
+        assert_eq!(counter.value(), 7);
+        assert_eq!(counter.goal_reached(), Some(true));
     }
 
     #[test]

@@ -6,6 +6,7 @@
 // `mod xxx;` : déclare un module. Son code est dans `src/xxx.rs` ou `src/xxx/mod.rs`.
 mod audio;
 mod command;
+mod config_window;
 mod counter;
 mod display;
 mod format;
@@ -39,11 +40,14 @@ const LANGUAGE: Language = Language::French;
 /// Taille des fenêtres compteurs à leur création ; elle s'ajuste au texte dès la première image.
 const INITIAL_COUNTER_SIZE: egui::Vec2 = egui::vec2(200.0, 100.0);
 
-/// Objectifs codés en dur pour tester (configurables à l'étape 8). 0 = pas d'objectif.
-const GLOBAL_GOAL: u64 = 10;
-const ROUND_GOAL: u64 = 3;
+/// Les onglets de la fenêtre de configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigTab {
+    Counters,
+    Shortcuts,
+}
 
-/// Identifiant egui de la fenêtre principale.
+/// Identifiant egui de la fenêtre principale (la configuration).
 /// (Il est calculé par une fonction : `from_hash_of` ne peut pas servir dans une `const`.)
 fn main_viewport() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("main")
@@ -113,6 +117,14 @@ struct App {
     windows: [CounterWindow; 2],
     /// Nom de la touche de validation, tiré des raccourcis configurés (ex. « Num Entrée »).
     confirm_key_name: String,
+    /// Les raccourcis actifs (pour la vue d'ensemble de la configuration).
+    shortcuts: Vec<Shortcut>,
+    /// L'onglet affiché dans la configuration.
+    tab: ConfigTab,
+    /// Un réglage a changé et n'est pas encore sauvegardé. On attend que le bouton de la souris
+    /// soit relâché : glisser un curseur change la valeur à chaque image, et on ne veut pas
+    /// réécrire le fichier 60 fois par seconde.
+    unsaved_changes: bool,
     /// Fichier de sauvegarde (`None` si le système n'a pas de dossier de configuration).
     state_path: Option<PathBuf>,
 }
@@ -131,7 +143,7 @@ impl App {
             audio.play(slot);
         }
         if outcome.save {
-            self.save();
+            self.save_state();
         }
         if outcome.reset_prompt_started {
             // À l'expiration du délai, il faut redessiner pour effacer « Reset ? », même si
@@ -146,7 +158,7 @@ impl App {
 
     /// Sauvegarde l'état. En cas d'échec, on le signale sans planter : l'appli continue
     /// de compter, et réessaiera au prochain changement.
-    fn save(&self) {
+    fn save_state(&self) {
         let Some(path) = &self.state_path else {
             return;
         };
@@ -154,6 +166,8 @@ impl App {
         let [global, round] = &self.windows;
         let state = SavedState {
             global_value: self.tracker.counter(CounterId::Global).value(),
+            global_goal: self.tracker.counter(CounterId::Global).goal(),
+            round_goal: self.tracker.counter(CounterId::Round).goal(),
             global_style: self.global_style.clone(),
             round_style: self.round_style.clone(),
             round_copies_global: self.round_copies_global,
@@ -200,11 +214,12 @@ impl App {
         (text, style.text_color(counter.goal_reached()))
     }
 
-    /// La fenêtre principale (provisoire : la vraie configuration arrive à l'étape 8).
+    /// La fenêtre principale : la configuration, en deux onglets.
     fn main_window(&mut self, ctx: &egui::Context) {
         let builder = egui::ViewportBuilder::default()
-            .with_title("Literally A Counter")
-            .with_inner_size([340.0, 150.0]);
+            .with_title(i18n::text(Text::ConfigWindowTitle, LANGUAGE))
+            .with_inner_size([520.0, 640.0])
+            .with_min_inner_size([360.0, 240.0]);
         // `show_viewport_immediate` : affiche une fenêtre supplémentaire, dessinée TOUT DE SUITE
         // par la closure. La closure peut donc emprunter `self` (pas besoin de partager les
         // données entre threads, contrairement aux viewports « deferred »).
@@ -214,42 +229,104 @@ impl App {
                 quit(ui.ctx());
             }
             egui::CentralPanel::default().show(ui, |ui| {
-                let mut changed = false;
-                // `&mut self.windows` : on parcourt les fenêtres en pouvant les modifier.
-                for window in &mut self.windows {
-                    let label = match window.id {
-                        CounterId::Global => Text::ShowGlobal,
-                        CounterId::Round => Text::ShowRound,
-                    };
-                    let mut visible = window.visible;
-                    // `checkbox` modifie `visible` quand on clique ; `.changed()` le signale.
-                    if ui
-                        .checkbox(&mut visible, i18n::message(label, LANGUAGE, &[]))
-                        .changed()
-                    {
-                        if visible {
-                            window.visible = true;
-                        } else {
-                            window.hide();
-                        }
-                        changed = true;
+                // La ligne des onglets, avec « Quitter » tout à droite.
+                ui.horizontal(|ui| {
+                    // `selectable_value` : un bouton « sélectionné » quand `self.tab` vaut cette
+                    // valeur ; un clic met `self.tab` à cette valeur.
+                    for (tab, label) in [
+                        (ConfigTab::Counters, Text::TabCounters),
+                        (ConfigTab::Shortcuts, Text::TabShortcuts),
+                    ] {
+                        ui.selectable_value(&mut self.tab, tab, i18n::text(label, LANGUAGE));
                     }
-                }
-                let label = i18n::message(Text::RoundCopiesGlobal, LANGUAGE, &[]);
-                // `|=` : « ou » cumulatif (`changed` reste vrai s'il l'était déjà).
-                changed |= ui.checkbox(&mut self.round_copies_global, label).changed();
+                    // `right_to_left` : la suite est placée en partant de la droite.
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(i18n::text(Text::Quit, LANGUAGE)).clicked() {
+                            quit(ui.ctx());
+                        }
+                    });
+                });
                 ui.separator();
-                if ui
-                    .button(i18n::message(Text::Quit, LANGUAGE, &[]))
-                    .clicked()
-                {
-                    quit(ui.ctx());
-                }
-                if changed {
-                    self.save();
-                }
+                // Barre de défilement si la fenêtre est trop petite pour tout afficher.
+                egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
+                    ConfigTab::Counters => {
+                        for index in 0..self.windows.len() {
+                            self.unsaved_changes |= self.counter_settings(ui, index);
+                            ui.add_space(12.0);
+                        }
+                    }
+                    ConfigTab::Shortcuts => {
+                        config_window::shortcuts_overview(ui, &self.shortcuts);
+                    }
+                });
             });
+            // Sauvegarde dès que la souris est relâchée (voir `unsaved_changes`).
+            if self.unsaved_changes && !ui.input(|i| i.pointer.any_down()) {
+                self.save_state();
+                self.unsaved_changes = false;
+            }
         });
+    }
+
+    /// La section de configuration d'un compteur. Renvoie `true` si un réglage a changé.
+    fn counter_settings(&mut self, ui: &mut egui::Ui, index: usize) -> bool {
+        let mut changed = false;
+        let window = &mut self.windows[index];
+        let id = window.id;
+        ui.heading(i18n::text(
+            match id {
+                CounterId::Global => Text::GlobalCounter,
+                CounterId::Round => Text::RoundCounter,
+            },
+            LANGUAGE,
+        ));
+
+        let mut visible = window.visible;
+        // `checkbox` modifie `visible` quand on clique ; `.changed()` le signale.
+        if ui
+            .checkbox(&mut visible, i18n::text(Text::ShowWindow, LANGUAGE))
+            .changed()
+        {
+            if visible {
+                window.visible = true;
+            } else {
+                window.hide();
+            }
+            changed = true;
+        }
+
+        // L'objectif est dans le compteur : on en modifie une copie, puis on la renvoie.
+        let mut goal = self.tracker.counter(id).goal();
+        ui.horizontal(|ui| {
+            ui.label(i18n::text(Text::Goal, LANGUAGE));
+            if ui.add(egui::DragValue::new(&mut goal)).changed() {
+                self.tracker.set_goal(id, goal);
+                changed = true;
+            }
+        });
+
+        match id {
+            CounterId::Global => {
+                changed |= config_window::style_editor(ui, "global_style", &mut self.global_style);
+            }
+            CounterId::Round => {
+                // `|=` : « ou » cumulatif (`changed` reste vrai s'il l'était déjà).
+                changed |= ui
+                    .checkbox(
+                        &mut self.round_copies_global,
+                        i18n::text(Text::RoundCopiesGlobal, LANGUAGE),
+                    )
+                    .changed();
+                // Copie activée : les réglages propres de la partie restent visibles, mais grisés
+                // (`add_enabled_ui(false, ...)` désactive tout ce qui est dessiné dedans).
+                let enabled = !self.round_copies_global;
+                ui.add_enabled_ui(enabled, |ui| {
+                    changed |=
+                        config_window::style_editor(ui, "round_style", &mut self.round_style);
+                });
+            }
+        }
+        changed
     }
 
     /// Où ouvrir la fenêtre n° `index` : à côté des fenêtres déjà ouvertes, sans les chevaucher.
@@ -300,12 +377,19 @@ impl App {
             },
         };
         let window = &self.windows[index];
+        // Premier plan ou non : réglé dans la configuration. egui compare ce réglage avec
+        // celui de l'image précédente, et ne prévient Windows qu'en cas de changement.
+        let level = if self.style(window.id).always_on_top {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        };
         let builder = egui::ViewportBuilder::default()
             .with_title(window.title.clone())
             .with_position(position)
             .with_inner_size(INITIAL_COUNTER_SIZE)
             .with_decorations(false) // pas de bordure ni de barre de titre
-            .with_always_on_top() // toujours au premier plan
+            .with_window_level(level)
             .with_resizable(false)
             // Fenêtre TOUJOURS transparente (demandé à la création) : on dessine nous-mêmes
             // le fond, ce qui permet les coins arrondis et le fond transparent.
@@ -330,7 +414,7 @@ impl App {
         // fenêtre principale se décoche), on ne quitte pas l'appli.
         if ui.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested()) {
             window.hide();
-            self.save();
+            self.save_state();
             return;
         }
 
@@ -508,6 +592,11 @@ fn layout_in_current_window(
 impl eframe::App for App {
     /// La couleur avec laquelle les fenêtres sont effacées avant chaque image : TRANSPARENTE.
     /// Le fond visible (avec ses coins arrondis) est dessiné ensuite, par nous.
+    /// Appelée une fois à la fermeture de l'appli : on sauvegarde un dernier réglage éventuel.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.save_state();
+    }
+
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
@@ -642,6 +731,8 @@ fn main() -> eframe::Result {
             // Le contexte egui, pour pouvoir réveiller l'interface depuis le thread des raccourcis.
             let ctx = cc.egui_ctx.clone();
 
+            // Une copie des raccourcis pour la configuration : l'original part dans le thread.
+            let shortcuts_overview = shortcuts.clone();
             hotkeys::start(shortcuts, move |command| {
                 // `let _ =` : on ignore volontairement le résultat (échec seulement si l'appli est fermée).
                 let _ = sender.send(command);
@@ -651,9 +742,9 @@ fn main() -> eframe::Result {
 
             Ok(Box::new(App {
                 tracker: Tracker::new(
-                    Counter::new(saved.global_value, GLOBAL_GOAL),
+                    Counter::new(saved.global_value, saved.global_goal),
                     // La partie repart TOUJOURS de 0 (sa valeur n'est jamais sauvegardée).
-                    Counter::new(0, ROUND_GOAL),
+                    Counter::new(0, saved.round_goal),
                 ),
                 commands: receiver,
                 audio: AudioEngine::new(),
@@ -665,6 +756,9 @@ fn main() -> eframe::Result {
                 round_style: saved.round_style,
                 round_copies_global: saved.round_copies_global,
                 confirm_key_name,
+                shortcuts: shortcuts_overview,
+                tab: ConfigTab::Counters,
+                unsaved_changes: false,
                 state_path,
             }))
         }),

@@ -7,7 +7,10 @@
 //! - le nom d'une touche est calculé à partir de la touche RÉELLEMENT configurée, et traduit lui
 //!   aussi. Si on change la touche, tous les messages qui la citent suivent automatiquement.
 
+use crate::command::Command;
+use crate::counter::CounterAction;
 use crate::hotkeys::{Key, Shortcut};
+use crate::tracker::CounterId;
 
 /// La langue de l'interface. Elle sera détectée et réglable à l'étape 10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,14 +32,80 @@ pub enum Text {
     GlobalWindowTitle,
     /// Titre de la fenêtre du compteur de partie.
     RoundWindowTitle,
-    /// Fenêtre principale : case « afficher le global ».
-    ShowGlobal,
-    /// Fenêtre principale : case « afficher la partie ».
-    ShowRound,
-    /// Fenêtre principale : option de copie de l'affichage.
-    RoundCopiesGlobal,
-    /// Fenêtre principale : bouton pour quitter l'appli.
+    /// Titre de la fenêtre de configuration.
+    ConfigWindowTitle,
+    /// Onglet des compteurs.
+    TabCounters,
+    /// Onglet des raccourcis.
+    TabShortcuts,
+    /// Bouton pour quitter l'appli.
     Quit,
+    /// Titre de la section du global.
+    GlobalCounter,
+    /// Titre de la section de la partie.
+    RoundCounter,
+    /// Case « afficher la fenêtre ».
+    ShowWindow,
+    /// Objectif d'un compteur.
+    Goal,
+    /// Option de copie de l'affichage.
+    RoundCopiesGlobal,
+    /// Champ du format.
+    Template,
+    /// Aide du format.
+    TemplateHelp,
+    /// Taille de police.
+    FontSize,
+    /// Marge autour du texte.
+    Margin,
+    /// Rayon des coins.
+    CornerRadius,
+    /// Ancrage.
+    Anchor,
+    /// Ancrage à gauche.
+    AnchorLeft,
+    /// Ancrage au centre.
+    AnchorCenter,
+    /// Ancrage à droite.
+    AnchorRight,
+    /// Premier plan.
+    AlwaysOnTop,
+    /// Couleur de fond.
+    Background,
+    /// Fond transparent.
+    TransparentBackground,
+    /// Couleur du texte sans objectif.
+    PlainTextColor,
+    /// Couleur objectif pas atteint.
+    GoalPendingColor,
+    /// Couleur objectif atteint.
+    GoalReachedColor,
+    /// Couleur des alertes.
+    AlertColor,
+    /// Information de l'onglet raccourcis (provisoire).
+    ShortcutsInfo,
+    /// En-tête de colonne.
+    ColumnAction,
+    /// En-tête de colonne.
+    ColumnShortcut,
+    /// Action « ajouter ». Emplacements : `{n}` (quantité), `{target}` (compteurs visés).
+    ActionAdd,
+    /// Action « retirer ». Mêmes emplacements.
+    ActionSubtract,
+    /// Compteurs visés : les deux.
+    TargetBoth,
+    /// Compteurs visés : le global.
+    TargetGlobal,
+    /// Compteurs visés : la partie.
+    TargetRound,
+    /// Action reset du global.
+    ActionResetGlobal,
+    /// Action reset de la partie.
+    ActionResetRound,
+    /// Action valider le reset.
+    ActionConfirmReset,
+    /// Action annuler le reset.
+    ActionUndoReset,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -49,15 +118,92 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::GlobalWindowTitle, Language::English) => "Literally A Counter: total",
         (Text::RoundWindowTitle, Language::French) => "Literally A Counter : partie",
         (Text::RoundWindowTitle, Language::English) => "Literally A Counter: round",
-        (Text::ShowGlobal, Language::French) => "Afficher le compteur global",
-        (Text::ShowGlobal, Language::English) => "Show the total counter",
-        (Text::ShowRound, Language::French) => "Afficher le compteur de partie",
-        (Text::ShowRound, Language::English) => "Show the round counter",
-        (Text::RoundCopiesGlobal, Language::French) => "La partie copie l'affichage du global",
-        (Text::RoundCopiesGlobal, Language::English) => "Round uses the total's display",
+        (Text::ConfigWindowTitle, Language::French) => "Literally A Counter : configuration",
+        (Text::ConfigWindowTitle, Language::English) => "Literally A Counter: settings",
+        (Text::TabCounters, Language::French) => "Compteurs",
+        (Text::TabCounters, Language::English) => "Counters",
+        (Text::TabShortcuts, Language::French) => "Raccourcis",
+        (Text::TabShortcuts, Language::English) => "Shortcuts",
         (Text::Quit, Language::French) => "Quitter",
         (Text::Quit, Language::English) => "Quit",
+        (Text::GlobalCounter, Language::French) => "Compteur global",
+        (Text::GlobalCounter, Language::English) => "Total counter",
+        (Text::RoundCounter, Language::French) => "Compteur de partie",
+        (Text::RoundCounter, Language::English) => "Round counter",
+        (Text::ShowWindow, Language::French) => "Afficher la fenêtre",
+        (Text::ShowWindow, Language::English) => "Show the window",
+        (Text::Goal, Language::French) => "Objectif (0 = aucun)",
+        (Text::Goal, Language::English) => "Goal (0 = none)",
+        (Text::RoundCopiesGlobal, Language::French) => "Copier l'affichage du global",
+        (Text::RoundCopiesGlobal, Language::English) => "Use the total's display",
+        (Text::Template, Language::French) => "Format",
+        (Text::Template, Language::English) => "Format",
+        (Text::TemplateHelp, Language::French) => {
+            "Variables : {value}, {goal}, {remaining}, {ratio}, {ratio:p}. Entre crochets : affiché seulement s'il y a un objectif."
+        }
+        (Text::TemplateHelp, Language::English) => {
+            "Variables: {value}, {goal}, {remaining}, {ratio}, {ratio:p}. Inside brackets: shown only when there is a goal."
+        }
+        (Text::FontSize, Language::French) => "Taille du texte",
+        (Text::FontSize, Language::English) => "Text size",
+        (Text::Margin, Language::French) => "Marge",
+        (Text::Margin, Language::English) => "Margin",
+        (Text::CornerRadius, Language::French) => "Arrondi des coins",
+        (Text::CornerRadius, Language::English) => "Corner radius",
+        (Text::Anchor, Language::French) => "Quand la largeur change",
+        (Text::Anchor, Language::English) => "When the width changes",
+        (Text::AnchorLeft, Language::French) => "Bord gauche fixe",
+        (Text::AnchorLeft, Language::English) => "Left edge fixed",
+        (Text::AnchorCenter, Language::French) => "Centre fixe",
+        (Text::AnchorCenter, Language::English) => "Center fixed",
+        (Text::AnchorRight, Language::French) => "Bord droit fixe",
+        (Text::AnchorRight, Language::English) => "Right edge fixed",
+        (Text::AlwaysOnTop, Language::French) => "Toujours au premier plan",
+        (Text::AlwaysOnTop, Language::English) => "Always on top",
+        (Text::Background, Language::French) => "Fond",
+        (Text::Background, Language::English) => "Background",
+        (Text::TransparentBackground, Language::French) => "Transparent",
+        (Text::TransparentBackground, Language::English) => "Transparent",
+        (Text::PlainTextColor, Language::French) => "Texte (sans objectif)",
+        (Text::PlainTextColor, Language::English) => "Text (no goal)",
+        (Text::GoalPendingColor, Language::French) => "Objectif pas atteint",
+        (Text::GoalPendingColor, Language::English) => "Goal not reached",
+        (Text::GoalReachedColor, Language::French) => "Objectif atteint",
+        (Text::GoalReachedColor, Language::English) => "Goal reached",
+        (Text::AlertColor, Language::French) => "Alertes (« Reset ? »)",
+        (Text::AlertColor, Language::English) => "Alerts (\"Reset?\")",
+        (Text::ShortcutsInfo, Language::French) => {
+            "Vue d'ensemble. La modification des raccourcis arrive à l'étape 8b."
+        }
+        (Text::ShortcutsInfo, Language::English) => "Overview. Editing shortcuts comes in step 8b.",
+        (Text::ColumnAction, Language::French) => "Action",
+        (Text::ColumnAction, Language::English) => "Action",
+        (Text::ColumnShortcut, Language::French) => "Raccourci",
+        (Text::ColumnShortcut, Language::English) => "Shortcut",
+        (Text::ActionAdd, Language::French) => "+{n} ({target})",
+        (Text::ActionAdd, Language::English) => "+{n} ({target})",
+        (Text::ActionSubtract, Language::French) => "−{n} ({target})",
+        (Text::ActionSubtract, Language::English) => "−{n} ({target})",
+        (Text::TargetBoth, Language::French) => "global et partie",
+        (Text::TargetBoth, Language::English) => "total and round",
+        (Text::TargetGlobal, Language::French) => "global",
+        (Text::TargetGlobal, Language::English) => "total",
+        (Text::TargetRound, Language::French) => "partie",
+        (Text::TargetRound, Language::English) => "round",
+        (Text::ActionResetGlobal, Language::French) => "Reset du global",
+        (Text::ActionResetGlobal, Language::English) => "Reset the total",
+        (Text::ActionResetRound, Language::French) => "Reset de la partie",
+        (Text::ActionResetRound, Language::English) => "Reset the round",
+        (Text::ActionConfirmReset, Language::French) => "Valider le reset",
+        (Text::ActionConfirmReset, Language::English) => "Confirm the reset",
+        (Text::ActionUndoReset, Language::French) => "Annuler le dernier reset",
+        (Text::ActionUndoReset, Language::English) => "Undo the last reset",
     }
+}
+
+/// Un message sans emplacement (raccourci pour `message(text, language, &[])`).
+pub fn text(text: Text, language: Language) -> String {
+    template(text, language).to_string()
 }
 
 /// Le message, avec ses emplacements remplis.
@@ -128,11 +274,37 @@ pub fn shortcut_name(shortcut: &Shortcut, language: Language) -> String {
         .join(" + ")
 }
 
+/// Le nom d'une commande, par ex. « +1 (global et partie) » ou « Reset du global ».
+pub fn command_name(command: Command, language: Language) -> String {
+    match command {
+        Command::Count(targets, action) => {
+            let target = match (targets.global, targets.round) {
+                (true, true) => Text::TargetBoth,
+                (true, false) => Text::TargetGlobal,
+                // `_` : les autres cas (partie seule ; « aucun » n'existe pas en pratique).
+                _ => Text::TargetRound,
+            };
+            let (template, n) = match action {
+                CounterAction::Add(n) => (Text::ActionAdd, n),
+                CounterAction::Subtract(n) => (Text::ActionSubtract, n),
+            };
+            message(
+                template,
+                language,
+                &[("n", &n.to_string()), ("target", &text(target, language))],
+            )
+        }
+        Command::Reset(CounterId::Global) => text(Text::ActionResetGlobal, language),
+        Command::Reset(CounterId::Round) => text(Text::ActionResetRound, language),
+        Command::ConfirmReset => text(Text::ActionConfirmReset, language),
+        Command::UndoReset => text(Text::ActionUndoReset, language),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::Command;
-    use crate::tracker::CounterId;
+    use crate::tracker::Targets;
 
     #[test]
     fn reset_prompt_uses_the_configured_key() {
@@ -177,6 +349,22 @@ mod tests {
         assert_eq!(
             shortcut_name(&shortcut, Language::French),
             "Ctrl + Clic molette"
+        );
+    }
+
+    #[test]
+    fn command_names() {
+        let plus_both = Command::Count(Targets::BOTH, CounterAction::Add(1));
+        assert_eq!(
+            command_name(plus_both, Language::French),
+            "+1 (global et partie)"
+        );
+        let minus_round =
+            Command::Count(Targets::only(CounterId::Round), CounterAction::Subtract(5));
+        assert_eq!(command_name(minus_round, Language::English), "−5 (round)");
+        assert_eq!(
+            command_name(Command::Reset(CounterId::Global), Language::French),
+            "Reset du global"
         );
     }
 

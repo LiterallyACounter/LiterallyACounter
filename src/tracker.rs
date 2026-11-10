@@ -115,6 +115,11 @@ impl Tracker {
         }
     }
 
+    /// Change l'objectif d'un compteur (depuis la configuration).
+    pub fn set_goal(&mut self, id: CounterId, goal: u64) {
+        self.counter_mut(id).set_goal(goal);
+    }
+
     /// Une demande de reset du global est-elle affichée ?
     pub fn reset_pending(&self, now: Instant) -> bool {
         self.reset_confirmation.is_pending(now)
@@ -309,6 +314,14 @@ mod tests {
             Outcome::default()
         );
         assert_eq!(values(&t), (15, 1));
+    }
+
+    #[test]
+    fn goals_are_independent() {
+        let mut t = tracker(14, 3);
+        t.set_goal(CounterId::Round, 5);
+        assert_eq!(t.counter(CounterId::Round).goal(), 5);
+        assert_eq!(t.counter(CounterId::Global).goal(), 0);
     }
 
     #[test]
