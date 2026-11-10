@@ -117,6 +117,20 @@ pub enum Text {
     ActionAdd5,
     /// Ligne −5.
     ActionSubtract5,
+    /// Titre de la fenêtre du menu d'un compteur.
+    MenuWindowTitle,
+    /// Champ de saisie de la valeur.
+    Value,
+    /// Bouton de validation.
+    Apply,
+    /// Bouton de reset dans le menu.
+    ResetAction,
+    /// Bouton pour cacher la fenêtre.
+    HideWindow,
+    /// Bouton pour ouvrir la configuration.
+    OpenSettings,
+    /// Rappel du menu dans la configuration.
+    MenuHint,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -233,6 +247,24 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::ActionAdd5, Language::English) => "+5",
         (Text::ActionSubtract5, Language::French) => "−5",
         (Text::ActionSubtract5, Language::English) => "−5",
+        (Text::MenuWindowTitle, Language::French) => "Literally A Counter : menu",
+        (Text::MenuWindowTitle, Language::English) => "Literally A Counter: menu",
+        (Text::Value, Language::French) => "Valeur",
+        (Text::Value, Language::English) => "Value",
+        (Text::Apply, Language::French) => "Valider",
+        (Text::Apply, Language::English) => "Apply",
+        (Text::ResetAction, Language::French) => "Reset",
+        (Text::ResetAction, Language::English) => "Reset",
+        (Text::HideWindow, Language::French) => "Cacher la fenêtre",
+        (Text::HideWindow, Language::English) => "Hide the window",
+        (Text::OpenSettings, Language::French) => "Configuration…",
+        (Text::OpenSettings, Language::English) => "Settings…",
+        (Text::MenuHint, Language::French) => {
+            "Le menu d'un compteur (saisie de la valeur, reset…) s'ouvre avec le bouton ••• qui apparaît quand la souris le survole."
+        }
+        (Text::MenuHint, Language::English) => {
+            "A counter's menu (set value, reset…) opens with the ••• button shown when the mouse hovers it."
+        }
     }
 }
 

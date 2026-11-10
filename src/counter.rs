@@ -98,6 +98,13 @@ impl Counter {
         self.value_before_reset = None;
     }
 
+    /// Fixe directement la valeur (saisie dans le menu). Ce n'est pas un reset : il n'y a rien
+    /// à annuler ensuite, comme quand on recompte après un reset.
+    pub fn set_value(&mut self, value: u64) {
+        self.value = value;
+        self.value_before_reset = None;
+    }
+
     /// Remet le compteur à 0, en retenant l'ancienne valeur pour pouvoir annuler.
     pub fn reset(&mut self) {
         self.value_before_reset = Some(self.value);
@@ -156,6 +163,16 @@ mod tests {
         let mut counter = Counter::default();
         counter.apply(CounterAction::Subtract(1));
         assert_eq!(counter.value(), 0);
+    }
+
+    #[test]
+    fn set_value_forbids_undo() {
+        let mut counter = Counter::new(7, 0);
+        counter.reset();
+        counter.set_value(42);
+        assert_eq!(counter.value(), 42);
+        assert!(!counter.undo_reset());
+        assert_eq!(counter.value(), 42);
     }
 
     #[test]

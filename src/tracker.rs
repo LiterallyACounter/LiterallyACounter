@@ -115,6 +115,16 @@ impl Tracker {
         }
     }
 
+    /// Fixe la valeur d'un compteur (saisie dans le menu). Renvoie `true` s'il faut
+    /// sauvegarder (le global a changé).
+    pub fn set_value(&mut self, id: CounterId, value: u64) -> bool {
+        self.counter_mut(id).set_value(value);
+        if self.last_reset == Some(id) {
+            self.last_reset = None;
+        }
+        id == CounterId::Global
+    }
+
     /// Change l'objectif d'un compteur (depuis la configuration).
     pub fn set_goal(&mut self, id: CounterId, goal: u64) {
         self.counter_mut(id).set_goal(goal);
@@ -314,6 +324,26 @@ mod tests {
             Outcome::default()
         );
         assert_eq!(values(&t), (15, 1));
+    }
+
+    #[test]
+    fn set_value_saves_only_the_global() {
+        let mut t = tracker(14, 3);
+        assert!(t.set_value(CounterId::Global, 100));
+        assert!(!t.set_value(CounterId::Round, 7));
+        assert_eq!(values(&t), (100, 7));
+    }
+
+    #[test]
+    fn set_value_forgets_the_last_reset() {
+        let mut t = tracker(14, 3);
+        t.handle(Command::Reset(CounterId::Round), Instant::now());
+        t.set_value(CounterId::Round, 9);
+        assert_eq!(
+            t.handle(Command::UndoReset, Instant::now()),
+            Outcome::default()
+        );
+        assert_eq!(values(&t), (14, 9));
     }
 
     #[test]

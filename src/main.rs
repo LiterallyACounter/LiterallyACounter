@@ -48,6 +48,38 @@ enum ConfigTab {
     Shortcuts,
 }
 
+/// Taille de la fenêtre du menu d'un compteur.
+const MENU_SIZE: egui::Vec2 = egui::vec2(230.0, 190.0);
+
+/// Le menu ouvert d'un compteur.
+struct CounterMenu {
+    /// Le compteur concerné (numéro dans `App::windows`).
+    index: usize,
+    /// La valeur en cours de saisie.
+    value: u64,
+    /// Position du menu à l'écran, choisie à l'ouverture.
+    position: egui::Pos2,
+    /// Le menu a-t-il déjà eu le focus ? (Il se ferme quand il le PERD, pas avant de l'avoir eu.)
+    was_focused: bool,
+    native: Option<NativeWindow>,
+}
+
+/// Ce que l'utilisateur a choisi dans le menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MenuAction {
+    SetValue(u64),
+    Reset,
+    SetAlwaysOnTop(bool),
+    Hide,
+    OpenSettings,
+    Close,
+}
+
+/// Identifiant egui de la fenêtre du menu (un seul menu ouvert à la fois).
+fn menu_viewport() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("counter_menu")
+}
+
 /// Identifiant egui de la fenêtre principale (la configuration).
 /// (Il est calculé par une fonction : `from_hash_of` ne peut pas servir dans une `const`.)
 fn main_viewport() -> egui::ViewportId {
@@ -133,6 +165,8 @@ struct App {
     /// soit relâché : glisser un curseur change la valeur à chaque image, et on ne veut pas
     /// réécrire le fichier 60 fois par seconde.
     unsaved_changes: bool,
+    /// Le menu d'un compteur, s'il est ouvert.
+    menu: Option<CounterMenu>,
     /// Fichier de sauvegarde (`None` si le système n'a pas de dossier de configuration).
     state_path: Option<PathBuf>,
 }
@@ -259,6 +293,8 @@ impl App {
                 // Barre de défilement si la fenêtre est trop petite pour tout afficher.
                 egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
                     ConfigTab::Counters => {
+                        ui.add(egui::Label::new(i18n::text(Text::MenuHint, LANGUAGE)).wrap());
+                        ui.add_space(8.0);
                         for index in 0..self.windows.len() {
                             self.unsaved_changes |= self.counter_settings(ui, index);
                             ui.add_space(12.0);
@@ -523,6 +559,7 @@ impl App {
 
         // 3) On dessine. Les clics sont notés dans `clicked`, et exécutés APRÈS le dessin.
         let mut clicked = None;
+        let mut open_menu = false;
         // `Frame::NONE.fill(...)` : un panneau sans marge, rempli avec la couleur de fond,
         // avec des coins arrondis (`CornerRadius::same` = le même rayon pour les 4 coins).
         let panel_frame = egui::Frame::NONE
@@ -550,17 +587,166 @@ impl App {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
                 // Clic gauche : +1 sur CE compteur. Clic droit (« secondary ») : -1.
-                // (Provisoire : à l'étape 8, le clic droit ouvrira un menu.)
                 if response.clicked() {
                     clicked = Some(CounterAction::Add(1));
                 }
                 if response.secondary_clicked() {
                     clicked = Some(CounterAction::Subtract(1));
                 }
+
+                // Le bouton du menu, dans le coin en haut à droite, SEULEMENT quand la souris
+                // survole le compteur (il n'apparaît donc pas dans OBS le reste du temps).
+                // Ajouté APRÈS la zone cliquable : il est « au-dessus » et reçoit le clic à sa place.
+                if ui.rect_contains_pointer(rect) && menu_button(ui, rect).clicked() {
+                    open_menu = true;
+                }
             });
         if let Some(action) = clicked {
             let command = Command::Count(Targets::only(id), action);
             self.handle(command, now, ui.ctx());
+        }
+        if open_menu {
+            // Le menu s'ouvre sous le compteur. `outer_rect` : la place de la fenêtre à l'écran.
+            let counter_rect = ui.ctx().input(|i| i.viewport().outer_rect);
+            let screen = ui.ctx().input(|i| i.viewport().monitor_size);
+            self.menu = counter_rect.map(|rect| CounterMenu {
+                index,
+                value: self.tracker.counter(id).value(),
+                position: menu_position(rect, screen),
+                was_focused: false,
+                native: None,
+            });
+        }
+    }
+
+    /// Le menu d'un compteur, dans sa propre petite fenêtre (un compteur est trop petit pour
+    /// qu'on y dessine un menu : egui ne peut pas dessiner hors de la fenêtre).
+    fn menu_window(&mut self, ctx: &egui::Context, now: Instant) {
+        let Some(menu) = &self.menu else {
+            return;
+        };
+        let index = menu.index;
+        let id = self.windows[index].id;
+        let title = i18n::text(Text::MenuWindowTitle, LANGUAGE);
+        let builder = egui::ViewportBuilder::default()
+            .with_title(title.clone())
+            .with_position(menu.position)
+            .with_inner_size(MENU_SIZE)
+            .with_decorations(false)
+            .with_always_on_top()
+            .with_resizable(false)
+            .with_taskbar(false);
+        // Ce que l'utilisateur a choisi dans le menu, exécuté après le dessin.
+        let mut action = None;
+        ctx.show_viewport_immediate(menu_viewport(), builder, |ui, _class| {
+            let Some(menu) = &mut self.menu else {
+                return;
+            };
+            if menu.native.is_none() {
+                menu.native =
+                    NativeWindow::find_by_title(&title).inspect(|w| w.remove_decorations());
+            }
+            // Fermeture : Échap, ou dès que le menu perd le focus (clic ailleurs).
+            let focused = ui.input(|i| i.viewport().focused);
+            if focused == Some(true) {
+                menu.was_focused = true;
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape))
+                || (menu.was_focused && focused == Some(false))
+            {
+                action = Some(MenuAction::Close);
+                return;
+            }
+
+            let frame = egui::Frame::window(ui.style()).corner_radius(0);
+            egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+                ui.strong(i18n::text(
+                    match id {
+                        CounterId::Global => Text::GlobalCounter,
+                        CounterId::Round => Text::RoundCounter,
+                    },
+                    LANGUAGE,
+                ));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(i18n::text(Text::Value, LANGUAGE));
+                    let field = ui.add(egui::DragValue::new(&mut menu.value));
+                    // Entrée dans le champ, ou le bouton « Valider ».
+                    let entered =
+                        field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button(i18n::text(Text::Apply, LANGUAGE)).clicked() || entered {
+                        action = Some(MenuAction::SetValue(menu.value));
+                    }
+                });
+                if ui.button(i18n::text(Text::ResetAction, LANGUAGE)).clicked() {
+                    action = Some(MenuAction::Reset);
+                }
+                // Les réglages d'affichage : grisés pour la partie quand elle copie le global.
+                let display_editable = !(id == CounterId::Round && self.round_copies_global);
+                let mut on_top = effective_style(
+                    id,
+                    &self.global_style,
+                    &self.round_style,
+                    self.round_copies_global,
+                )
+                .always_on_top;
+                ui.add_enabled_ui(display_editable, |ui| {
+                    if ui
+                        .checkbox(&mut on_top, i18n::text(Text::AlwaysOnTop, LANGUAGE))
+                        .changed()
+                    {
+                        action = Some(MenuAction::SetAlwaysOnTop(on_top));
+                    }
+                });
+                ui.separator();
+                if ui.button(i18n::text(Text::HideWindow, LANGUAGE)).clicked() {
+                    action = Some(MenuAction::Hide);
+                }
+                if ui
+                    .button(i18n::text(Text::OpenSettings, LANGUAGE))
+                    .clicked()
+                {
+                    action = Some(MenuAction::OpenSettings);
+                }
+            });
+        });
+
+        let Some(action) = action else {
+            return;
+        };
+        match action {
+            MenuAction::SetValue(value) => {
+                if self.tracker.set_value(id, value) {
+                    self.save_state();
+                }
+                self.menu = None;
+            }
+            MenuAction::Reset => {
+                self.handle(Command::Reset(id), now, ctx);
+                self.menu = None;
+            }
+            // Le menu reste ouvert : on voit la case changer.
+            MenuAction::SetAlwaysOnTop(on_top) => {
+                match id {
+                    CounterId::Global => self.global_style.always_on_top = on_top,
+                    CounterId::Round => self.round_style.always_on_top = on_top,
+                }
+                self.save_state();
+            }
+            MenuAction::Hide => {
+                self.windows[index].hide();
+                self.save_state();
+                self.menu = None;
+            }
+            MenuAction::OpenSettings => {
+                // Ramène la configuration : sortie de la barre des tâches si elle était réduite,
+                // puis au premier plan.
+                ctx.send_viewport_cmd_to(main_viewport(), egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd_to(main_viewport(), egui::ViewportCommand::Focus);
+                self.tab = ConfigTab::Counters;
+                self.menu = None;
+            }
+            MenuAction::Close => self.menu = None,
         }
     }
 }
@@ -579,6 +765,45 @@ fn effective_style<'a>(
         CounterId::Global => global,
         CounterId::Round if round_copies_global => global,
         CounterId::Round => round,
+    }
+}
+
+/// Le bouton du menu, dessiné en haut à droite de `rect` : trois points sur un fond discret.
+/// (On dessine les points nous-mêmes : la police intégrée n'a pas de symbole « engrenage ».)
+fn menu_button(ui: &mut egui::Ui, rect: egui::Rect) -> egui::Response {
+    let size = egui::vec2(22.0, 14.0);
+    let button = egui::Rect::from_min_size(
+        egui::pos2(rect.right() - size.x - 4.0, rect.top() + 4.0),
+        size,
+    );
+    let response = ui.interact(
+        button,
+        egui::Id::unique("menu_button"),
+        egui::Sense::click(),
+    );
+    // Plus visible quand la souris est dessus.
+    let alpha = if response.hovered() { 200 } else { 120 };
+    let painter = ui.painter();
+    painter.rect_filled(button, 4.0, egui::Color32::from_black_alpha(alpha));
+    for dx in [-6.0, 0.0, 6.0] {
+        painter.circle_filled(
+            button.center() + egui::vec2(dx, 0.0),
+            1.8,
+            egui::Color32::WHITE,
+        );
+    }
+    response
+}
+
+/// Où ouvrir le menu d'un compteur : sous le compteur, aligné à gauche ; au-dessus s'il
+/// sortirait de l'écran par le bas.
+fn menu_position(counter: egui::Rect, screen: Option<egui::Vec2>) -> egui::Pos2 {
+    let below = egui::pos2(counter.left(), counter.bottom() + 4.0);
+    let fits = screen.is_none_or(|screen| below.y + MENU_SIZE.y <= screen.y);
+    if fits {
+        below
+    } else {
+        egui::pos2(counter.left(), counter.top() - MENU_SIZE.y - 4.0)
     }
 }
 
@@ -699,6 +924,7 @@ impl eframe::App for App {
         for index in 0..self.windows.len() {
             self.counter_window(&ctx, index, now);
         }
+        self.menu_window(&ctx, now);
     }
 }
 
@@ -804,6 +1030,7 @@ fn main() -> eframe::Result {
                 shortcuts,
                 capture: None,
                 capture_error: None,
+                menu: None,
                 tab: ConfigTab::Counters,
                 unsaved_changes: false,
                 state_path,
@@ -818,6 +1045,21 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_opens_below_the_counter() {
+        let counter = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(80.0, 80.0));
+        let screen = Some(egui::vec2(1920.0, 1080.0));
+        assert_eq!(menu_position(counter, screen), egui::pos2(100.0, 184.0));
+    }
+
+    #[test]
+    fn menu_opens_above_when_too_low() {
+        let counter = egui::Rect::from_min_size(egui::pos2(100.0, 950.0), egui::vec2(80.0, 80.0));
+        let screen = Some(egui::vec2(1920.0, 1080.0));
+        let position = menu_position(counter, screen);
+        assert_eq!(position.y, 950.0 - MENU_SIZE.y - 4.0);
+    }
 
     #[test]
     fn round_copies_the_global_style_when_enabled() {
