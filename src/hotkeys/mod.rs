@@ -19,7 +19,7 @@ mod windows;
 #[cfg(windows)]
 pub use windows::start;
 
-use crate::counter::CounterAction;
+use crate::command::Command;
 
 /// Une touche du clavier, identifiée par son code « virtual-key » Windows.
 ///
@@ -35,8 +35,15 @@ impl Key {
     pub const SHIFT: Key = Key(0x10);
     pub const CONTROL: Key = Key(0x11);
     pub const ALT: Key = Key(0x12);
+    pub const ENTER: Key = Key(0x0D);
+    pub const NUMPAD_0: Key = Key(0x60);
     pub const NUMPAD_ADD: Key = Key(0x6B);
     pub const NUMPAD_SUBTRACT: Key = Key(0x6D);
+    pub const NUMPAD_DECIMAL: Key = Key(0x6E);
+    /// Entrée du pavé numérique. Windows lui donne le MÊME code que l'Entrée principale (0x0D) ;
+    /// on la distingue grâce à l'indicateur « touche étendue » et on lui attribue un code
+    /// à nous, hors de la plage des codes Windows (qui s'arrête à 0xFF).
+    pub const NUMPAD_ENTER: Key = Key(0x100 | 0x0D);
 }
 
 /// Un raccourci : des touches à tenir (`held`), puis une touche déclencheuse (`trigger`).
@@ -50,13 +57,13 @@ pub struct Shortcut {
     pub held: Vec<Key>,
     /// Touche dont l'appui déclenche le raccourci.
     pub trigger: Key,
-    /// Ce que fait le raccourci.
-    pub action: CounterAction,
+    /// La commande déclenchée par le raccourci.
+    pub command: Command,
 }
 
 /// Version « vide » pour les systèmes pas encore pris en charge : ne fait rien.
 /// (La v1 cible Windows ; cela permet juste au projet de compiler ailleurs.)
 #[cfg(not(windows))]
-pub fn start(_shortcuts: Vec<Shortcut>, _on_action: impl Fn(CounterAction) + Send + 'static) {
+pub fn start(_shortcuts: Vec<Shortcut>, _on_command: impl Fn(Command) + Send + 'static) {
     eprintln!("Raccourcis globaux non pris en charge sur ce système.");
 }

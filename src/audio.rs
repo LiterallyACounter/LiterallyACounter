@@ -18,14 +18,28 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use crate::counter::CounterAction;
 
 /// Les emplacements de son : à quel type d'action un son est associé.
-/// (Reset et annulation du reset arriveront à l'étape 5.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SoundSlot {
     Increment,
     Decrement,
+    /// Alerte « Reset ? » (en attente de validation).
+    ResetPrompt,
+    /// Reset effectué.
+    ResetDone,
+    /// Reset annulé.
+    ResetUndone,
 }
 
 impl SoundSlot {
+    /// Tous les emplacements (pour charger leurs sons au démarrage).
+    pub const ALL: [SoundSlot; 5] = [
+        SoundSlot::Increment,
+        SoundSlot::Decrement,
+        SoundSlot::ResetPrompt,
+        SoundSlot::ResetDone,
+        SoundSlot::ResetUndone,
+    ];
+
     /// L'emplacement de son correspondant à une action sur le compteur.
     pub fn for_action(action: CounterAction) -> Self {
         match action {
@@ -41,14 +55,22 @@ impl SoundSlot {
             SoundSlot::Increment => SoundChoice::Windows("Speech On.wav".into()),
             // « Windows - Synthèse vocale désactivée »
             SoundSlot::Decrement => SoundChoice::Windows("Speech Off.wav".into()),
+            // Sons provisoires (seront revus avec les sons embarqués, étape 9).
+            SoundSlot::ResetPrompt => SoundChoice::Windows("Windows Exclamation.wav".into()),
+            // Le bruit de la corbeille qu'on vide : de circonstance pour un reset.
+            SoundSlot::ResetDone => SoundChoice::Windows("Windows Recycle.wav".into()),
+            SoundSlot::ResetUndone => SoundChoice::Windows("Windows Restore.wav".into()),
         }
     }
 
-    /// Fréquence du bip de secours : aigu pour +, grave pour −.
+    /// Fréquence du bip de secours, si le son Windows est introuvable.
     fn fallback_frequency(self) -> f32 {
         match self {
-            SoundSlot::Increment => 880.0, // La 5
-            SoundSlot::Decrement => 440.0, // La 4
+            SoundSlot::Increment => 880.0,    // La 5 (aigu)
+            SoundSlot::Decrement => 440.0,    // La 4 (grave)
+            SoundSlot::ResetPrompt => 1200.0, // très aigu : alerte
+            SoundSlot::ResetDone => 330.0,    // Mi 4 : très grave
+            SoundSlot::ResetUndone => 660.0,  // Mi 5
         }
     }
 }
@@ -61,7 +83,7 @@ pub enum SoundChoice {
     /// Un bip généré, à la fréquence donnée (en hertz).
     #[expect(
         dead_code,
-        reason = "choix proposé dans la fenêtre de config (étape 7)"
+        reason = "choix proposé dans la fenêtre de config (étape 8)"
     )]
     Beep(f32),
 }
@@ -99,7 +121,7 @@ impl AudioEngine {
             sounds: HashMap::new(),
             players: HashMap::new(),
         };
-        for slot in [SoundSlot::Increment, SoundSlot::Decrement] {
+        for slot in SoundSlot::ALL {
             engine.set_sound(slot, &slot.default_sound());
         }
         Some(engine)
@@ -118,9 +140,9 @@ impl AudioEngine {
 
     /// Coupe ou réactive le son d'un emplacement.
     // `#[expect(dead_code)]` : on SAIT que cette fonction n'est pas encore utilisée
-    // (le réglage arrive à l'étape 7). Quand elle le sera, le compilateur nous dira
+    // (le réglage arrive à l'étape 8). Quand elle le sera, le compilateur nous dira
     // de retirer cette ligne.
-    #[expect(dead_code, reason = "réglage branché à l'étape 7 (fenêtre de config)")]
+    #[expect(dead_code, reason = "réglage branché à l'étape 8 (fenêtre de config)")]
     pub fn set_muted(&mut self, slot: SoundSlot, muted: bool) {
         if let Some(sound) = self.sounds.get_mut(&slot) {
             sound.muted = muted;
@@ -128,13 +150,13 @@ impl AudioEngine {
     }
 
     /// Règle le volume général (ramené entre 0.0 et 1.0).
-    #[expect(dead_code, reason = "curseur de volume branché à l'étape 7")]
+    #[expect(dead_code, reason = "curseur de volume branché à l'étape 8")]
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = clamp_volume(volume);
     }
 
     /// Joue un bip de test au volume actuel (au relâchement du curseur de volume).
-    #[expect(dead_code, reason = "curseur de volume branché à l'étape 7")]
+    #[expect(dead_code, reason = "curseur de volume branché à l'étape 8")]
     pub fn play_test_beep(&mut self) {
         self.play_samples(SoundSlot::Increment, beep(660.0));
     }
@@ -285,7 +307,7 @@ mod tests {
     #[cfg(windows)]
     fn default_windows_sounds_load() {
         // Vérifie sur CE PC que les deux sons par défaut existent et se décodent.
-        for slot in [SoundSlot::Increment, SoundSlot::Decrement] {
+        for slot in SoundSlot::ALL {
             assert!(load(&slot.default_sound()).is_some(), "{slot:?}");
         }
     }

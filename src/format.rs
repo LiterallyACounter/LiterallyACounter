@@ -11,17 +11,8 @@
 //! - Un `{` ou un `[` sans fermeture est affiché tel quel.
 //! - Doubler un caractère l'affiche littéralement : `{{` → `{`, `[[` → `[` (rarement utile).
 
-/// Langue utilisée pour formater les nombres (virgule décimale, espace avant « % »).
-/// La langue sera détectée et réglable à l'étape 9.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Language {
-    French,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "choix de la langue à l'étape 9")
-    )]
-    English,
-}
+// La langue (virgule décimale, espace avant « % ») est définie dans le module `i18n`.
+use crate::i18n::Language;
 
 /// Les valeurs disponibles pour le format.
 #[derive(Debug, Clone, Copy)]

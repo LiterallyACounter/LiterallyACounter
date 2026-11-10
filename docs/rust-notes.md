@@ -247,3 +247,39 @@ Projet d'essai : `RustSandbox/hello_egui/` (hors dépôt).
 - **Barre de titre fantôme** : winit garde le style `WS_CAPTION` (barre de titre) pour obtenir l'ombre. Comme on a désactivé le dessin des bordures par Windows 11, l'ancien moteur de Windows redessinait une barre de titre classique (✕, □, _) à chaque redimensionnement. La sous-classe bloque donc aussi `WM_NCPAINT`, `WM_NCACTIVATE` et deux messages internes (`0xAE`, `0xAF`). Le `match` avec garde (`WM_NCCALCSIZE if wparam != 0 => ...`) rend ce tri lisible.
 - **Piège `WM_NCACTIVATE`** : l'ignorer complètement (`return 1`) empêchait le glisser, car Windows y met à jour son état interne d'activation. La bonne façon : le transmettre avec `lparam = -1`, la valeur prévue par Windows pour « traite-le sans redessiner la bordure ».
 - **Tester un glisser** : simuler la souris avec `SetCursorPos` ne génère pas de vrais mouvements. Il faut `mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ...)`. Toujours valider un outil de test sur une version qui marche avant de conclure.
+
+---
+
+## Étape 5 : compteur global persistant, reset et annulation
+
+### serde : sauvegarder une struct
+
+- `#[derive(Serialize, Deserialize)]` : serde génère tout seul la conversion struct ↔ données. `serde_json::to_string_pretty(&state)` donne le JSON, `serde_json::from_str::<SavedState>(&texte)` fait l'inverse.
+- `#[serde(default)]` : un champ absent du fichier prend sa valeur par défaut. Les anciennes sauvegardes restent lisibles quand on ajoute des champs.
+- **Écriture atomique** : `fs::write` dans un fichier `.tmp`, puis `fs::rename` à la place de l'ancien. Le renommage est instantané, donc une coupure pendant l'écriture ne peut pas abîmer la sauvegarde.
+
+### Fichiers et chemins
+
+- `PathBuf` (chemin possédé) et `&Path` (emprunté) : l'équivalent de `String` / `&str` pour les chemins. `.join("x")` ajoute un élément, `.parent()` remonte d'un cran, `.with_extension("json.tmp")` change l'extension.
+- `dirs::config_dir()` : le dossier de configuration standard de chaque OS.
+- `io::Result<()>` : « rien en cas de succès, une erreur d'entrée/sortie sinon ». Avec `?`, chaque étape qui échoue fait sortir de la fonction avec son erreur.
+- `Err(e) if e.kind() == io::ErrorKind::NotFound => ...` : un `match` avec garde pour traiter « fichier absent » différemment des autres erreurs.
+- `.as_deref()` : transforme un `Option<PathBuf>` en `Option<&Path>` (on emprunte le contenu sans le prendre).
+
+### Options et temps
+
+- `Option::take()` : récupère le contenu **et** remet `None` à la place. Parfait pour une action utilisable une seule fois (l'annulation du reset).
+- `Instant` (un moment) et `Duration` (une durée). `now.duration_since(t0)`, `checked_sub` (renvoie `None` au lieu d'une durée négative), `.filter(...)` sur une `Option`.
+- **Passer l'heure en paramètre** (`now: Instant`) plutôt que la lire à l'intérieur : les tests simulent le temps (`t0 + Duration::from_secs(4)`) sans attendre.
+- `ctx.request_repaint_after(durée)` : demande à egui de redessiner plus tard, ici pour effacer « Reset ? » à l'expiration.
+
+### Enums imbriqués et textes
+
+- `Command::Count(CounterAction::Add(1))` : une variante peut envelopper un autre enum, ce qui évite de dupliquer `Add` / `Subtract`.
+- `&'static str` : un texte écrit dans le programme, valable pendant toute l'exécution (nos textes de traduction).
+- `&[(&str, &str)]` : une **tranche** de tuples, par ex. `&[("key", "Num Entrée")]`, pour remplir les emplacements d'un message.
+- `code @ 0x60..=0x69 => ...` : donne un nom à la valeur qui correspond à un motif d'intervalle.
+- `iter().chain(std::iter::once(x))` : ajoute un élément au bout d'un itérateur ; `.collect::<Vec<_>>().join(" + ")` assemble les noms.
+- **Fins de ligne** : Git sous Windows convertit les fichiers en CRLF. Un remplacement de texte qui cherche des `\n` seuls échoue alors en silence. À garder en tête pour les scripts.
+- **Retirer un style de fenêtre** : `GetWindowLongW(hwnd, GWL_STYLE)` lit le style (un ensemble de bits), `SetWindowLongW` l'écrit. `(style & !(WS_CAPTION | WS_THICKFRAME)) | WS_POPUP` : `& !X` éteint les bits de X, `| Y` allume ceux de Y. Une fenêtre sans `WS_CAPTION` ne peut plus jamais afficher de barre de titre (fini le flash au démarrage).
+- **`WM_STYLECHANGING`** : Windows prévient *avant* tout changement de style, avec un pointeur vers le futur style (`STYLESTRUCT`), qu'on peut modifier. On s'en sert pour empêcher winit de remettre la barre de titre. `&mut *(lparam as *mut STYLESTRUCT)` : on transforme le pointeur brut en référence modifiable (dans un bloc `unsafe`).
