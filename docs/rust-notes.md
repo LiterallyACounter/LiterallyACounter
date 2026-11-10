@@ -413,3 +413,60 @@ La fonction renvoie un **emprunt**. `'a` dit au compilateur à quoi il est empru
 - `fold(depart, |acc, x| ...)` : parcourt la liste en faisant évoluer un résultat (ici, un maximum ou un minimum).
 - `all(|r| ...)` : vrai si **tous** les éléments vérifient la condition (le pendant de `any`).
 - `?` dans une boucle d'une fonction qui renvoie `Option` : à la première valeur `None`, on sort de la fonction.
+
+## Étape 8a-8b : configuration et raccourcis modifiables
+
+### Les contrôles d'egui
+
+- `ui.add(egui::DragValue::new(&mut x).range(8.0..=300.0))` : un nombre qu'on glisse ou qu'on saisit. Le contrôle reçoit un **emprunt modifiable** (`&mut`) et change la valeur directement.
+- `ui.checkbox(&mut b, "…")`, `ui.radio_value(&mut anchor, Anchor::Left, "…")`, `ui.selectable_value(&mut tab, ConfigTab::Counters, "…")` : même principe.
+- `.changed()` sur la réponse d'un contrôle : vrai si l'utilisateur vient de le modifier. On le cumule avec `changed |= ...`.
+- `egui::ComboBox::from_id_salt(...)` : une liste déroulante. `from_id_salt` donne un identifiant unique, car egui doit distinguer les listes affichées dans la même fenêtre.
+- `ui.add_enabled_ui(false, |ui| ...)` : tout ce qui est dessiné dedans est grisé et inactif.
+- `color_edit_button_srgba(ui, &mut couleur, Alpha::OnlyBlend)` : le sélecteur de couleur intégré, avec l'opacité.
+- Pièges rencontrés :
+  - dans une cellule de grille, un texte ne passe pas à la ligne ;
+  - la police intégrée n'a pas tous les symboles (➕, ⚠…) ;
+  - egui zoome l'interface avec Ctrl + « - » / « + », il a fallu le couper (`options.zoom_with_keyboard = false`).
+
+### Sauvegarder sans écrire 60 fois par seconde
+
+Glisser un `DragValue` change la valeur à chaque image. On note qu'il y a des modifications (`unsaved_changes = true`) et on sauvegarde quand le bouton de la souris est relâché (`!ui.input(|i| i.pointer.any_down())`), ainsi qu'à la fermeture (`on_exit`).
+
+### Conflit de noms
+
+`eframe::App` a déjà une méthode `save`. Notre `self.save()` appelait la sienne, d'où le renommage en `save_state`. Quand un trait et un type ont une méthode du même nom, le compilateur peut choisir celle du trait.
+
+### Renvoyer une demande plutôt qu'agir
+
+Comme `Tracker::handle`, l'éditeur de raccourcis ne modifie rien : il renvoie un `Option<ShortcutRequest>` (« démarrer une capture », « supprimer le n° 3 »…), et `main.rs` l'exécute. Cela évite d'avoir à la fois l'interface et l'appli empruntées en modification.
+
+### `Result` pour un refus
+
+```rust
+pub fn apply_capture(...) -> Result<(), CaptureRefused>
+```
+
+`Ok(())` : c'est fait ; `Err(CaptureRefused::MainClickNeedsModifier)` : refusé, avec la raison. L'appelant fait un `match` pour afficher le message.
+
+### Petites méthodes utiles
+
+- `Option::filter(|&i| i < len)` : garde la valeur seulement si la condition est vraie.
+- `(id != 0).then_some(id)` : `Some(id)` si la condition est vraie, `None` sinon.
+- `slice.split_last()` : le dernier élément et le reste (`Option<(&T, &[T])>`).
+- `receiver.try_iter()` : tous les messages déjà arrivés dans un channel, sans attendre.
+- `#[serde(transparent)]` : une struct à un seul champ (`Key(u16)`) s'écrit comme ce champ (un simple nombre).
+- `#[derive(Hash)]` : nécessaire pour servir d'identifiant à egui (`ui.indent(kind, ...)`) ou de clé dans un `HashSet`.
+
+### Piloter un thread qui attend des messages Windows
+
+Le thread du hook dort dans `GetMessageW`. Pour lui envoyer une demande :
+1. on la met dans un channel (`Sender<Control>`) ;
+2. on le réveille avec `PostThreadMessageW(thread_id, WM_APP, 0, 0)` ;
+3. sa boucle reçoit `WM_APP` et lit le channel.
+
+Il faut créer sa file de messages avant de publier son identifiant (`PeekMessageW`), sinon un message envoyé trop tôt se perd.
+
+### Capturer une combinaison
+
+Les touches sont notées dans l'ordre d'appui. Au premier relâchement, la dernière touche enfoncée devient la touche de déclenchement, les autres sont les touches à tenir. Logique pure dans `capture.rs`, testée sans clavier.
