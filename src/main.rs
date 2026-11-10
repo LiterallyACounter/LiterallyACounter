@@ -48,8 +48,17 @@ enum ConfigTab {
     Shortcuts,
 }
 
-/// Taille de la fenêtre du menu d'un compteur.
-const MENU_SIZE: egui::Vec2 = egui::vec2(230.0, 190.0);
+/// Taille de la fenêtre du menu d'un compteur, sans la liste des raccourcis.
+const MENU_BASE_SIZE: egui::Vec2 = egui::vec2(330.0, 190.0);
+/// Hauteur d'une ligne de la liste des raccourcis dans le menu (mesurée à l'écran).
+const MENU_ROW_HEIGHT: f32 = 24.0;
+/// Hauteur ajoutée par la section des raccourcis (titre, bouton « Modifier… »).
+const MENU_SECTION_HEIGHT: f32 = 22.0;
+
+/// Taille du menu quand il liste `rows` lignes de raccourcis (un raccourci par ligne).
+fn menu_size(rows: usize) -> egui::Vec2 {
+    MENU_BASE_SIZE + egui::vec2(0.0, MENU_SECTION_HEIGHT + rows as f32 * MENU_ROW_HEIGHT)
+}
 
 /// Le menu ouvert d'un compteur.
 struct CounterMenu {
@@ -59,6 +68,8 @@ struct CounterMenu {
     value: u64,
     /// Position du menu à l'écran, choisie à l'ouverture.
     position: egui::Pos2,
+    /// Taille du menu, calculée à l'ouverture selon le nombre de raccourcis listés.
+    size: egui::Vec2,
     /// Le menu a-t-il déjà eu le focus ? (Il se ferme quand il le PERD, pas avant de l'avoir eu.)
     was_focused: bool,
     native: Option<NativeWindow>,
@@ -72,6 +83,7 @@ enum MenuAction {
     SetAlwaysOnTop(bool),
     Hide,
     OpenSettings,
+    EditShortcuts,
     Close,
 }
 
@@ -625,10 +637,17 @@ impl App {
             // Le menu s'ouvre sous le compteur. `outer_rect` : la place de la fenêtre à l'écran.
             let counter_rect = ui.ctx().input(|i| i.viewport().outer_rect);
             let screen = ui.ctx().input(|i| i.viewport().monitor_size);
+            // Une ligne par raccourci listé.
+            let rows = hotkeys::shortcuts_for(&self.shortcuts, id)
+                .iter()
+                .map(|(_, shortcuts)| shortcuts.len())
+                .sum();
+            let size = menu_size(rows);
             self.menu = counter_rect.map(|rect| CounterMenu {
                 index,
                 value: self.tracker.counter(id).value(),
-                position: menu_position(rect, screen),
+                position: menu_position(rect, screen, size),
+                size,
                 was_focused: false,
                 native: None,
             });
@@ -647,7 +666,7 @@ impl App {
         let builder = egui::ViewportBuilder::default()
             .with_title(title.clone())
             .with_position(menu.position)
-            .with_inner_size(MENU_SIZE)
+            .with_inner_size(menu.size)
             .with_decorations(false)
             .with_always_on_top()
             .with_resizable(false)
@@ -715,6 +734,33 @@ impl App {
                     }
                 });
                 ui.separator();
+                // Les raccourcis de ce compteur (lecture seule), pour s'en souvenir en stream.
+                ui.strong(i18n::text(Text::TabShortcuts, LANGUAGE));
+                egui::Grid::new("menu_shortcuts")
+                    .num_columns(2)
+                    .spacing([16.0, 4.0])
+                    .show(ui, |ui| {
+                        // Un raccourci par ligne (une cellule de grille ne passe pas à la ligne) ;
+                        // le nom de l'action seulement sur la première.
+                        for (kind, shortcuts) in hotkeys::shortcuts_for(&self.shortcuts, id) {
+                            for (n, shortcut) in shortcuts.iter().enumerate() {
+                                if n == 0 {
+                                    ui.label(i18n::command_kind_name(kind, LANGUAGE));
+                                } else {
+                                    ui.label("");
+                                }
+                                ui.label(i18n::shortcut_name(shortcut, LANGUAGE));
+                                ui.end_row();
+                            }
+                        }
+                    });
+                if ui
+                    .button(i18n::text(Text::EditShortcuts, LANGUAGE))
+                    .clicked()
+                {
+                    action = Some(MenuAction::EditShortcuts);
+                }
+                ui.separator();
                 if ui.button(i18n::text(Text::HideWindow, LANGUAGE)).clicked() {
                     action = Some(MenuAction::Hide);
                 }
@@ -754,12 +800,16 @@ impl App {
                 self.save_state();
                 self.menu = None;
             }
-            MenuAction::OpenSettings => {
+            MenuAction::OpenSettings | MenuAction::EditShortcuts => {
                 // Ramène la configuration : sortie de la barre des tâches si elle était réduite,
-                // puis au premier plan.
+                // puis au premier plan, sur l'onglet voulu.
                 ctx.send_viewport_cmd_to(main_viewport(), egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd_to(main_viewport(), egui::ViewportCommand::Focus);
-                self.tab = ConfigTab::Counters;
+                self.tab = if action == MenuAction::EditShortcuts {
+                    ConfigTab::Shortcuts
+                } else {
+                    ConfigTab::Counters
+                };
                 self.menu = None;
             }
             MenuAction::Close => self.menu = None,
@@ -813,13 +863,13 @@ fn menu_button(ui: &mut egui::Ui, rect: egui::Rect) -> egui::Response {
 
 /// Où ouvrir le menu d'un compteur : sous le compteur, aligné à gauche ; au-dessus s'il
 /// sortirait de l'écran par le bas.
-fn menu_position(counter: egui::Rect, screen: Option<egui::Vec2>) -> egui::Pos2 {
+fn menu_position(counter: egui::Rect, screen: Option<egui::Vec2>, size: egui::Vec2) -> egui::Pos2 {
     let below = egui::pos2(counter.left(), counter.bottom() + 4.0);
-    let fits = screen.is_none_or(|screen| below.y + MENU_SIZE.y <= screen.y);
+    let fits = screen.is_none_or(|screen| below.y + size.y <= screen.y);
     if fits {
         below
     } else {
-        egui::pos2(counter.left(), counter.top() - MENU_SIZE.y - 4.0)
+        egui::pos2(counter.left(), counter.top() - size.y - 4.0)
     }
 }
 
@@ -1066,18 +1116,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn menu_grows_with_the_shortcuts() {
+        assert!(menu_size(7).y > menu_size(2).y);
+        assert_eq!(menu_size(2).x, MENU_BASE_SIZE.x);
+    }
+
+    #[test]
     fn menu_opens_below_the_counter() {
         let counter = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(80.0, 80.0));
         let screen = Some(egui::vec2(1920.0, 1080.0));
-        assert_eq!(menu_position(counter, screen), egui::pos2(100.0, 184.0));
+        assert_eq!(
+            menu_position(counter, screen, MENU_BASE_SIZE),
+            egui::pos2(100.0, 184.0)
+        );
     }
 
     #[test]
     fn menu_opens_above_when_too_low() {
         let counter = egui::Rect::from_min_size(egui::pos2(100.0, 950.0), egui::vec2(80.0, 80.0));
         let screen = Some(egui::vec2(1920.0, 1080.0));
-        let position = menu_position(counter, screen);
-        assert_eq!(position.y, 950.0 - MENU_SIZE.y - 4.0);
+        let size = menu_size(7);
+        let position = menu_position(counter, screen, size);
+        assert_eq!(position.y, 950.0 - size.y - 4.0);
     }
 
     #[test]

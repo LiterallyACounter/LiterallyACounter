@@ -27,7 +27,7 @@ mod windows;
 #[cfg(windows)]
 pub use windows::{HotkeyHandle, start};
 
-use crate::command::Command;
+use crate::command::{Command, CommandKind};
 use crate::counter::CounterAction;
 use crate::tracker::{CounterId, Targets};
 
@@ -222,6 +222,32 @@ pub fn conflicts(shortcuts: &[Shortcut]) -> Vec<bool> {
         .collect()
 }
 
+/// Les raccourcis qui agissent sur un compteur, regroupés par action (dans l'ordre du tableau
+/// des raccourcis). Les actions sans raccourci sont omises. Sert au menu « ••• » du compteur.
+/// - +1 / −1 / +5 / −5 : ceux qui visent ce compteur (seul ou avec l'autre) ;
+/// - Reset : seulement celui de CE compteur ;
+/// - Valider le reset : seulement pour le global (le seul à demander une confirmation) ;
+/// - Annuler le dernier reset : pour les deux.
+pub fn shortcuts_for(shortcuts: &[Shortcut], id: CounterId) -> Vec<(CommandKind, Vec<&Shortcut>)> {
+    let concerns = |command: Command| match command {
+        Command::Count(targets, _) => targets.contains(id),
+        Command::Reset(counter) => counter == id,
+        Command::ConfirmReset => id == CounterId::Global,
+        Command::UndoReset => true,
+    };
+    CommandKind::ALL
+        .into_iter()
+        .filter_map(|kind| {
+            let matching: Vec<&Shortcut> = shortcuts
+                .iter()
+                .filter(|s| CommandKind::of(s.command) == Some(kind) && concerns(s.command))
+                .collect();
+            // `filter_map` : on garde `Some(...)`, on écarte `None` (action sans raccourci).
+            (!matching.is_empty()).then_some((kind, matching))
+        })
+        .collect()
+}
+
 /// Les raccourcis par défaut (spec M2).
 pub fn default_shortcuts() -> Vec<Shortcut> {
     // Petite fonction locale pour alléger l'écriture de la liste.
@@ -340,6 +366,53 @@ mod tests {
             Command::Count(Targets::only(CounterId::Global), CounterAction::Add(1));
         let shortcuts = vec![shortcut(&[], Key::NUMPAD_ADD), global_only];
         assert_eq!(conflicts(&shortcuts), vec![true, true]);
+    }
+
+    /// Les genres d'action listés pour un compteur.
+    fn kinds_for(shortcuts: &[Shortcut], id: CounterId) -> Vec<CommandKind> {
+        shortcuts_for(shortcuts, id)
+            .into_iter()
+            .map(|(kind, _)| kind)
+            .collect()
+    }
+
+    #[test]
+    fn counter_menu_lists_its_own_shortcuts() {
+        let defaults = default_shortcuts();
+        use CommandKind::*;
+        // Le global : comptage, SON reset, validation, annulation.
+        assert_eq!(
+            kinds_for(&defaults, CounterId::Global),
+            vec![
+                Add1,
+                Subtract1,
+                Add5,
+                Subtract5,
+                ResetGlobal,
+                ConfirmReset,
+                UndoReset
+            ]
+        );
+        // La partie : pas de reset du global ni de validation.
+        assert_eq!(
+            kinds_for(&defaults, CounterId::Round),
+            vec![Add1, Subtract1, Add5, Subtract5, ResetRound, UndoReset]
+        );
+        // +1 : Num +, Ctrl + clic molette et X2, dans l'ordre de la liste.
+        let global = shortcuts_for(&defaults, CounterId::Global);
+        assert_eq!(global[0].1.len(), 3);
+    }
+
+    #[test]
+    fn shortcut_for_the_other_counter_only_is_not_listed() {
+        let mut round_only = shortcut(&[], Key::NUMPAD_ADD);
+        round_only.command = Command::Count(Targets::only(CounterId::Round), CounterAction::Add(1));
+        let shortcuts = vec![round_only];
+        assert!(shortcuts_for(&shortcuts, CounterId::Global).is_empty());
+        assert_eq!(
+            kinds_for(&shortcuts, CounterId::Round),
+            vec![CommandKind::Add1]
+        );
     }
 
     #[test]

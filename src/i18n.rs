@@ -143,6 +143,8 @@ pub enum Text {
     MouseRateWarning,
     /// Bouton du bandeau.
     SwitchToPolling,
+    /// Bouton du menu vers l'onglet Raccourcis.
+    EditShortcuts,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -299,6 +301,8 @@ pub fn template(text: Text, language: Language) -> &'static str {
         }
         (Text::SwitchToPolling, Language::French) => "Passer à l'interrogation",
         (Text::SwitchToPolling, Language::English) => "Switch to polling",
+        (Text::EditShortcuts, Language::French) => "Modifier…",
+        (Text::EditShortcuts, Language::English) => "Edit…",
     }
 }
 
