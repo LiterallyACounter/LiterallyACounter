@@ -1,6 +1,7 @@
-//! Branchement Windows : un « hook clavier bas niveau » (WH_KEYBOARD_LL).
+//! Branchement Windows : un « hook clavier bas niveau » (WH_KEYBOARD_LL), et l'interrogation
+//! régulière des boutons de souris (voir `mouse.rs`).
 //!
-//! Principe :
+//! Principe du clavier :
 //! - Windows appelle notre fonction `hook_proc` à CHAQUE frappe, quelle que soit l'appli au premier plan.
 //! - On regarde la touche, on prévient l'appli si un raccourci correspond, puis on PASSE LA MAIN
 //!   (`CallNextHookEx`) : la touche continue son chemin jusqu'au jeu, rien n'est bloqué (contrainte C3).
@@ -21,13 +22,18 @@ use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG,
-    SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG, SetTimer,
+    SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
 };
 
 use super::matcher::Matcher;
-use super::{Key, Shortcut};
+use super::mouse::{ButtonChange, MousePoller};
+use super::{Key, Shortcut, mouse_keys_used};
 use crate::command::Command;
+
+/// Intervalle d'interrogation des boutons de souris, en millisecondes.
+/// (Le minuteur de Windows a une précision d'environ 15,6 ms : inutile de demander moins.)
+const MOUSE_POLL_MS: u32 = 15;
 
 /// L'état dont `hook_proc` a besoin.
 struct HookState {
@@ -35,6 +41,9 @@ struct HookState {
     /// La fonction à appeler pour chaque commande déclenchée.
     /// `Box<dyn Fn(...)>` : « n'importe quelle fonction de cette forme », rangée dans le tas.
     on_command: Box<dyn Fn(Command)>,
+    /// Les boutons de souris à surveiller (vide : on n'interroge pas la souris).
+    mouse_buttons: Vec<Key>,
+    mouse_poller: MousePoller,
 }
 
 // Problème : Windows appelle `hook_proc` sans nous laisser lui passer de paramètre.
@@ -58,12 +67,23 @@ pub fn start(shortcuts: Vec<Shortcut>, on_command: impl Fn(Command) + Send + 'st
     let spawn_result = std::thread::Builder::new()
         .name("hotkeys".into())
         .spawn(move || {
+            let mouse_buttons = mouse_keys_used(&shortcuts);
+            let watch_mouse = !mouse_buttons.is_empty();
             STATE.with(|state| {
                 *state.borrow_mut() = Some(HookState {
                     matcher: Matcher::new(shortcuts),
                     on_command: Box::new(on_command),
+                    mouse_buttons,
+                    mouse_poller: MousePoller::default(),
                 });
             });
+
+            // Souris : SEULEMENT si un raccourci l'utilise. Un minuteur Windows nous enverra alors
+            // un message WM_TIMER toutes les ~15 ms, traité dans la boucle de messages ci-dessous.
+            if watch_mouse {
+                // SÉCURITÉ : minuteur rattaché au thread (fenêtre nulle, pas de fonction de rappel).
+                unsafe { SetTimer(null_mut(), 0, MOUSE_POLL_MS, None) };
+            }
 
             // SÉCURITÉ : `hook_proc` a exactement la signature attendue par Windows ;
             // `GetModuleHandleW(null())` renvoie le module de notre propre exe.
@@ -80,7 +100,11 @@ pub fn start(shortcuts: Vec<Shortcut>, on_command: impl Fn(Command) + Send + 'st
             // SÉCURITÉ : `MSG` est une simple struct C, un contenu tout à zéro est valide.
             let mut msg: MSG = unsafe { std::mem::zeroed() };
             // SÉCURITÉ : `msg` est une struct valide, qu'on prête en écriture le temps de l'appel.
-            while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {}
+            while unsafe { GetMessageW(&mut msg, null_mut(), 0, 0) } > 0 {
+                if msg.message == WM_TIMER {
+                    poll_mouse();
+                }
+            }
         });
 
     if let Err(error) = spawn_result {
@@ -118,10 +142,7 @@ fn on_key_down(key: Key) {
     STATE.with(|state| {
         // `if let Some(x) = ...` : n'exécute le bloc que si l'Option contient une valeur.
         if let Some(state) = state.borrow_mut().as_mut() {
-            state.matcher.forget_released(is_key_down);
-            for command in state.matcher.key_down(key) {
-                (state.on_command)(command);
-            }
+            key_down(state, key);
         }
     });
 }
@@ -132,6 +153,29 @@ fn on_key_up(key: Key) {
             state.matcher.key_up(key);
         }
     });
+}
+
+/// Appelée à chaque tic du minuteur souris : un bouton qui vient d'être enfoncé est traité
+/// exactement comme une touche du clavier (mêmes règles, combinaisons possibles avec Ctrl…).
+fn poll_mouse() {
+    STATE.with(|state| {
+        if let Some(state) = state.borrow_mut().as_mut() {
+            for change in state.mouse_poller.poll(&state.mouse_buttons, is_key_down) {
+                match change {
+                    ButtonChange::Pressed(button) => key_down(state, button),
+                    ButtonChange::Released(button) => state.matcher.key_up(button),
+                }
+            }
+        }
+    });
+}
+
+/// Traite l'appui d'une touche (ou d'un bouton de souris) : règles des raccourcis, puis commandes.
+fn key_down(state: &mut HookState, key: Key) {
+    state.matcher.forget_released(is_key_down);
+    for command in state.matcher.key_down(key) {
+        (state.on_command)(command);
+    }
 }
 
 /// Demande à Windows si une touche est physiquement enfoncée.
