@@ -87,6 +87,26 @@ enum MenuAction {
     Close,
 }
 
+/// Taille du bouton « ••• ».
+const MENU_BUTTON_SIZE: egui::Vec2 = egui::vec2(22.0, 14.0);
+
+/// Le bouton « ••• » d'un compteur. Il vit dans SA PROPRE mini-fenêtre, posée sur le coin du
+/// compteur et exclue des captures d'écran : OBS (et toute capture) ne le voit jamais.
+/// Il n'existe que pendant le survol : le reste du temps, aucune fenêtre, aucun coût.
+struct MenuButton {
+    /// Le compteur concerné.
+    index: usize,
+    /// La souris était-elle sur le bouton à l'image précédente ? (Elle quitte alors la fenêtre
+    /// du compteur : sans cela, le bouton disparaîtrait au moment où on veut cliquer dessus.)
+    hovered: bool,
+    native: Option<NativeWindow>,
+}
+
+/// Identifiant egui de la mini-fenêtre du bouton « ••• ».
+fn menu_button_viewport() -> egui::ViewportId {
+    egui::ViewportId::from_hash_of("menu_button")
+}
+
 /// Identifiant egui de la fenêtre du menu (un seul menu ouvert à la fois).
 fn menu_viewport() -> egui::ViewportId {
     egui::ViewportId::from_hash_of("counter_menu")
@@ -179,6 +199,10 @@ struct App {
     unsaved_changes: bool,
     /// Le menu d'un compteur, s'il est ouvert.
     menu: Option<CounterMenu>,
+    /// Le bouton « ••• », s'il est affiché.
+    menu_button: Option<MenuButton>,
+    /// Le compteur survolé par la souris à cette image (`None` : aucun).
+    hovered_counter: Option<usize>,
     /// Méthode d'écoute de la souris.
     mouse_method: MouseMethod,
     /// Fréquence des événements souris, si elle est élevée (protection automatique).
@@ -587,7 +611,7 @@ impl App {
 
         // 3) On dessine. Les clics sont notés dans `clicked`, et exécutés APRÈS le dessin.
         let mut clicked = None;
-        let mut open_menu = false;
+        let mut hovered = false;
         // `Frame::NONE.fill(...)` : un panneau sans marge, rempli avec la couleur de fond,
         // avec des coins arrondis (`CornerRadius::same` = le même rayon pour les 4 coins).
         let panel_frame = egui::Frame::NONE
@@ -622,36 +646,105 @@ impl App {
                     clicked = Some(CounterAction::Subtract(1));
                 }
 
-                // Le bouton du menu, dans le coin en haut à droite, SEULEMENT quand la souris
-                // survole le compteur (il n'apparaît donc pas dans OBS le reste du temps).
-                // Ajouté APRÈS la zone cliquable : il est « au-dessus » et reçoit le clic à sa place.
-                if ui.rect_contains_pointer(rect) && menu_button(ui, rect).clicked() {
-                    open_menu = true;
-                }
+                // La souris survole-t-elle le compteur ? (Pour afficher le bouton « ••• ».)
+                hovered = ui.rect_contains_pointer(rect);
             });
+        if hovered {
+            self.hovered_counter = Some(index);
+        }
         if let Some(action) = clicked {
             let command = Command::Count(Targets::only(id), action);
             self.handle(command, now, ui.ctx());
         }
-        if open_menu {
-            // Le menu s'ouvre sous le compteur. `outer_rect` : la place de la fenêtre à l'écran.
-            let counter_rect = ui.ctx().input(|i| i.viewport().outer_rect);
-            let screen = ui.ctx().input(|i| i.viewport().monitor_size);
-            // Une ligne par raccourci listé.
-            let rows = hotkeys::shortcuts_for(&self.shortcuts, id)
-                .iter()
-                .map(|(_, shortcuts)| shortcuts.len())
-                .sum();
-            let size = menu_size(rows);
-            self.menu = counter_rect.map(|rect| CounterMenu {
+    }
+
+    /// Le bouton « ••• » : affiché tant que la souris est sur un compteur ou sur le bouton.
+    fn menu_button_window(&mut self, ctx: &egui::Context) {
+        // Le compteur survolé, ou celui dont le bouton est survolé.
+        let still_on_button = self
+            .menu_button
+            .as_ref()
+            .filter(|button| button.hovered)
+            .map(|button| button.index);
+        let Some(index) = self.hovered_counter.or(still_on_button) else {
+            // Plus de survol : on ne montre plus la mini-fenêtre, egui la ferme.
+            self.menu_button = None;
+            return;
+        };
+        // Un autre compteur qu'avant : on repart d'un bouton neuf.
+        if self.menu_button.as_ref().is_none_or(|b| b.index != index) {
+            self.menu_button = Some(MenuButton {
                 index,
-                value: self.tracker.counter(id).value(),
-                position: menu_position(rect, screen, size),
-                size,
-                was_focused: false,
+                hovered: false,
                 native: None,
             });
         }
+        // Place du compteur à l'écran : le bouton se pose dans son coin en haut à droite.
+        let Some(counter) =
+            ctx.input_for(self.windows[index].viewport, |i| i.viewport().outer_rect)
+        else {
+            return;
+        };
+        let position = egui::pos2(
+            counter.right() - MENU_BUTTON_SIZE.x - 4.0,
+            counter.top() + 4.0,
+        );
+        let title = i18n::text(Text::MenuButtonWindowTitle, LANGUAGE);
+        let builder = egui::ViewportBuilder::default()
+            .with_title(title.clone())
+            .with_position(position)
+            .with_inner_size(MENU_BUTTON_SIZE)
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_always_on_top()
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_active(false); // ne prend pas le focus en apparaissant
+        let mut clicked = false;
+        ctx.show_viewport_immediate(menu_button_viewport(), builder, |ui, _class| {
+            let Some(button) = &mut self.menu_button else {
+                return;
+            };
+            if button.native.is_none() {
+                button.native = NativeWindow::find_by_title(&title).inspect(|w| {
+                    w.remove_decorations();
+                    w.exclude_from_capture();
+                });
+            }
+            // La souris est-elle dans cette mini-fenêtre ?
+            button.hovered = ui.input(|i| i.pointer.hover_pos().is_some());
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| {
+                    clicked = draw_menu_button(ui, ui.max_rect()).clicked();
+                });
+        });
+        if clicked {
+            self.open_menu(ctx, index);
+        }
+    }
+
+    /// Ouvre le menu du compteur n° `index`, sous le compteur.
+    fn open_menu(&mut self, ctx: &egui::Context, index: usize) {
+        let window = &self.windows[index];
+        let id = window.id;
+        // `outer_rect` : la place de la fenêtre du compteur à l'écran.
+        let counter_rect = ctx.input_for(window.viewport, |i| i.viewport().outer_rect);
+        let screen = ctx.input_for(window.viewport, |i| i.viewport().monitor_size);
+        // Une ligne par raccourci listé.
+        let rows = hotkeys::shortcuts_for(&self.shortcuts, id)
+            .iter()
+            .map(|(_, shortcuts)| shortcuts.len())
+            .sum();
+        let size = menu_size(rows);
+        self.menu = counter_rect.map(|rect| CounterMenu {
+            index,
+            value: self.tracker.counter(id).value(),
+            position: menu_position(rect, screen, size),
+            size,
+            was_focused: false,
+            native: None,
+        });
     }
 
     /// Le menu d'un compteur, dans sa propre petite fenêtre (un compteur est trop petit pour
@@ -678,8 +771,11 @@ impl App {
                 return;
             };
             if menu.native.is_none() {
-                menu.native =
-                    NativeWindow::find_by_title(&title).inspect(|w| w.remove_decorations());
+                menu.native = NativeWindow::find_by_title(&title).inspect(|w| {
+                    w.remove_decorations();
+                    // Le menu n'apparaît dans aucune capture (même une capture d'écran complète).
+                    w.exclude_from_capture();
+                });
             }
             // Fermeture : Échap, ou dès que le menu perd le focus (clic ailleurs).
             let focused = ui.input(|i| i.viewport().focused);
@@ -834,14 +930,9 @@ fn effective_style<'a>(
     }
 }
 
-/// Le bouton du menu, dessiné en haut à droite de `rect` : trois points sur un fond discret.
+/// Le bouton du menu, dessiné dans `button` : trois points sur un fond discret.
 /// (On dessine les points nous-mêmes : la police intégrée n'a pas de symbole « engrenage ».)
-fn menu_button(ui: &mut egui::Ui, rect: egui::Rect) -> egui::Response {
-    let size = egui::vec2(22.0, 14.0);
-    let button = egui::Rect::from_min_size(
-        egui::pos2(rect.right() - size.x - 4.0, rect.top() + 4.0),
-        size,
-    );
+fn draw_menu_button(ui: &mut egui::Ui, button: egui::Rect) -> egui::Response {
     let response = ui.interact(
         button,
         egui::Id::unique("menu_button"),
@@ -988,9 +1079,11 @@ impl eframe::App for App {
         }
 
         self.main_window(&ctx);
+        self.hovered_counter = None;
         for index in 0..self.windows.len() {
             self.counter_window(&ctx, index, now);
         }
+        self.menu_button_window(&ctx);
         self.menu_window(&ctx, now);
     }
 }
@@ -1098,6 +1191,8 @@ fn main() -> eframe::Result {
                 capture: None,
                 capture_error: None,
                 menu: None,
+                menu_button: None,
+                hovered_counter: None,
                 mouse_method: saved.mouse_method,
                 mouse_rate: None,
                 tab: ConfigTab::Counters,

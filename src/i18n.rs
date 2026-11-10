@@ -145,6 +145,8 @@ pub enum Text {
     SwitchToPolling,
     /// Bouton du menu vers l'onglet Raccourcis.
     EditShortcuts,
+    /// Titre de la mini-fenêtre du bouton « ••• » (jamais visible).
+    MenuButtonWindowTitle,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -303,6 +305,8 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::SwitchToPolling, Language::English) => "Switch to polling",
         (Text::EditShortcuts, Language::French) => "Modifier…",
         (Text::EditShortcuts, Language::English) => "Edit…",
+        (Text::MenuButtonWindowTitle, Language::French) => "Literally A Counter : bouton du menu",
+        (Text::MenuButtonWindowTitle, Language::English) => "Literally A Counter: menu button",
     }
 }
 
