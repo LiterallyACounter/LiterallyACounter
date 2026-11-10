@@ -65,8 +65,9 @@ mod windows {
     };
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-        SetWindowPos, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT,
+        GWL_STYLE, GetWindowLongW, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW, SetWindowPos, WM_NCACTIVATE,
+        WM_NCCALCSIZE, WM_NCPAINT, WM_STYLECHANGING, WS_CAPTION, WS_POPUP, WS_THICKFRAME,
     };
 
     /// Identifiant de notre « sous-classe » (n'importe quel nombre unique pour nous).
@@ -97,9 +98,14 @@ mod windows {
         //    « quelle partie de la fenêtre est la zone de dessin ? » (WM_NCCALCSIZE),
         //    pour répondre « toute la fenêtre », avant que winit n'ajoute son décalage.
         //    Une « sous-classe » insère notre fonction devant celle de winit.
+        // 4) Pas de barre de titre, jamais : winit donne à la fenêtre le STYLE « barre de titre »
+        //    (WS_CAPTION, pour son ombre). Tant que ce style existe, Windows peut dessiner la barre
+        //    (titre, ✕…) un instant, par ex. au premier affichage. On retire le style lui-même.
         // SÉCURITÉ : `subclass_proc` a la signature attendue, et la fenêtre est valide.
         unsafe {
             SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, 0);
+            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            SetWindowLongW(hwnd, GWL_STYLE, without_frame(style) as i32);
             // Force Windows à recalculer le cadre tout de suite (sans bouger ni redimensionner).
             SetWindowPos(
                 hwnd,
@@ -159,11 +165,27 @@ mod windows {
             // - deux messages internes non documentés de Windows, qui dessinent aussi
             //   la barre de titre et le cadre (WM_NCUAHDRAWCAPTION / WM_NCUAHDRAWFRAME).
             WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME => return 0,
+            // winit pourrait REMETTRE le style « barre de titre » lors d'un changement d'état de
+            // la fenêtre. Windows nous prévient avant tout changement de style (WM_STYLECHANGING) :
+            // on retire alors le cadre du nouveau style, avant qu'il ne s'applique.
+            WM_STYLECHANGING if wparam as i32 == GWL_STYLE => {
+                // SÉCURITÉ : pour ce message, Windows garantit que `lparam` pointe vers un
+                // STYLESTRUCT valide et modifiable pendant l'appel.
+                let change = unsafe { &mut *(lparam as *mut STYLESTRUCT) };
+                change.styleNew = without_frame(change.styleNew);
+            }
             _ => {}
         }
         // Tous les autres messages : on laisse passer, comme si on n'était pas là.
         // SÉCURITÉ : on retransmet exactement les paramètres reçus.
         unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+    }
+
+    /// Retire d'un style de fenêtre la barre de titre et le cadre redimensionnable,
+    /// et en fait une fenêtre « popup » (sans cadre). Un style est un ensemble de bits :
+    /// `& !X` met les bits de X à 0, `| Y` met ceux de Y à 1.
+    fn without_frame(style: u32) -> u32 {
+        (style & !(WS_CAPTION | WS_THICKFRAME)) | WS_POPUP
     }
 
     /// Règle un attribut DWM de type entier. Les erreurs sont ignorées : sur Windows 10,

@@ -21,20 +21,20 @@ use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, MSG, SetWindowsHookExW,
-    WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, GetMessageW, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, MSG,
+    SetWindowsHookExW, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 use super::matcher::Matcher;
 use super::{Key, Shortcut};
-use crate::counter::CounterAction;
+use crate::command::Command;
 
 /// L'état dont `hook_proc` a besoin.
 struct HookState {
     matcher: Matcher,
-    /// La fonction à appeler pour chaque action déclenchée.
+    /// La fonction à appeler pour chaque commande déclenchée.
     /// `Box<dyn Fn(...)>` : « n'importe quelle fonction de cette forme », rangée dans le tas.
-    on_action: Box<dyn Fn(CounterAction)>,
+    on_command: Box<dyn Fn(Command)>,
 }
 
 // Problème : Windows appelle `hook_proc` sans nous laisser lui passer de paramètre.
@@ -48,20 +48,20 @@ thread_local! {
 
 /// Démarre l'écoute du clavier dans un thread dédié.
 ///
-/// `on_action` est appelée pour chaque action déclenchée, DEPUIS LE THREAD DU HOOK.
+/// `on_command` est appelée pour chaque commande déclenchée, DEPUIS LE THREAD DU HOOK.
 /// Elle doit donc être rapide et pouvoir être envoyée à un autre thread :
 /// - `Send` : « peut être transférée à un autre thread en toute sécurité » ;
 /// - `'static` : « ne contient pas de référence vers une donnée qui pourrait disparaître avant elle ».
 ///   Le compilateur vérifie ces deux garanties : c'est ce qui rend les threads sûrs en Rust.
-pub fn start(shortcuts: Vec<Shortcut>, on_action: impl Fn(CounterAction) + Send + 'static) {
-    // `move` : la closure PREND POSSESSION de `shortcuts` et `on_action` (elle les emporte dans le thread).
+pub fn start(shortcuts: Vec<Shortcut>, on_command: impl Fn(Command) + Send + 'static) {
+    // `move` : la closure PREND POSSESSION de `shortcuts` et `on_command` (elle les emporte dans le thread).
     let spawn_result = std::thread::Builder::new()
         .name("hotkeys".into())
         .spawn(move || {
             STATE.with(|state| {
                 *state.borrow_mut() = Some(HookState {
                     matcher: Matcher::new(shortcuts),
-                    on_action: Box::new(on_action),
+                    on_command: Box::new(on_command),
                 });
             });
 
@@ -98,7 +98,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         // SÉCURITÉ : pour WH_KEYBOARD_LL, Windows garantit que `lparam` pointe vers un
         // KBDLLHOOKSTRUCT valide pendant toute la durée de l'appel.
         let info = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-        let key = normalize(info.vkCode as u16);
+        let extended = info.flags & LLKHF_EXTENDED != 0;
+        let key = normalize(info.vkCode as u16, extended);
 
         // `wparam` indique le type d'événement. Les variantes « SYS » arrivent quand Alt est tenu.
         match wparam as u32 {
@@ -118,8 +119,8 @@ fn on_key_down(key: Key) {
         // `if let Some(x) = ...` : n'exécute le bloc que si l'Option contient une valeur.
         if let Some(state) = state.borrow_mut().as_mut() {
             state.matcher.forget_released(is_key_down);
-            for action in state.matcher.key_down(key) {
-                (state.on_action)(action);
+            for command in state.matcher.key_down(key) {
+                (state.on_command)(command);
             }
         }
     });
@@ -135,8 +136,14 @@ fn on_key_up(key: Key) {
 
 /// Demande à Windows si une touche est physiquement enfoncée.
 fn is_key_down(key: Key) -> bool {
+    // Notre code maison « Num Entrée » n'existe pas pour Windows : on demande l'état d'Entrée.
+    let code = if key == Key::NUMPAD_ENTER {
+        Key::ENTER.0
+    } else {
+        key.0
+    };
     // SÉCURITÉ : simple lecture d'état, n'importe quel code de touche est accepté.
-    let state = unsafe { GetAsyncKeyState(i32::from(key.0)) };
+    let state = unsafe { GetAsyncKeyState(i32::from(code)) };
     // Le bit de poids fort (0x8000) vaut 1 si la touche est enfoncée.
     (state as u16) & 0x8000 != 0
 }
@@ -144,8 +151,10 @@ fn is_key_down(key: Key) -> bool {
 /// Windows distingue Ctrl gauche / droit, Shift gauche / droit, etc.
 /// On les ramène à une seule touche « Ctrl », « Shift »… pour que « Ctrl + Num + »
 /// marche avec les deux Ctrl.
-fn normalize(vk: u16) -> Key {
+/// `extended` : indicateur « touche étendue » de Windows, qui distingue Num Entrée d'Entrée.
+fn normalize(vk: u16, extended: bool) -> Key {
     match vk {
+        0x0D if extended => Key::NUMPAD_ENTER,
         0xA0 | 0xA1 => Key::SHIFT,   // VK_LSHIFT, VK_RSHIFT
         0xA2 | 0xA3 => Key::CONTROL, // VK_LCONTROL, VK_RCONTROL
         0xA4 | 0xA5 => Key::ALT,     // VK_LMENU, VK_RMENU

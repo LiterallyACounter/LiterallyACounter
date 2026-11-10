@@ -35,14 +35,19 @@ pub struct Counter {
     value: u64,
     /// L'objectif. 0 = pas d'objectif.
     goal: u64,
+    /// La valeur d'avant le dernier reset, tant qu'on peut encore l'annuler.
+    /// `None` : rien à annuler (pas de reset, ou on a recompté depuis).
+    value_before_reset: Option<u64>,
 }
 
 // `impl Counter` : les MÉTHODES du compteur (des fonctions attachées à la struct).
 impl Counter {
-    /// Crée un compteur à 0 avec un objectif (0 = pas d'objectif).
+    /// Crée un compteur avec une valeur de départ (par ex. la valeur sauvegardée)
+    /// et un objectif (0 = pas d'objectif).
     /// `..Self::default()` : les autres champs prennent leur valeur par défaut.
-    pub fn with_goal(goal: u64) -> Self {
+    pub fn new(value: u64, goal: u64) -> Self {
         Self {
+            value,
             goal,
             ..Self::default()
         }
@@ -83,6 +88,26 @@ impl Counter {
             CounterAction::Add(n) => self.value = self.value.saturating_add(n),
             // `saturating_sub` : 0 - 1 donne 0 au lieu d'une erreur → jamais sous 0.
             CounterAction::Subtract(n) => self.value = self.value.saturating_sub(n),
+        }
+        // On a recompté : le reset précédent était voulu, on ne peut plus l'annuler.
+        self.value_before_reset = None;
+    }
+
+    /// Remet le compteur à 0, en retenant l'ancienne valeur pour pouvoir annuler.
+    pub fn reset(&mut self) {
+        self.value_before_reset = Some(self.value);
+        self.value = 0;
+    }
+
+    /// Annule le dernier reset. Renvoie `true` si c'était possible, `false` sinon.
+    pub fn undo_reset(&mut self) -> bool {
+        // `take()` : récupère le contenu de l'`Option` ET la remet à `None` (une seule annulation).
+        match self.value_before_reset.take() {
+            Some(previous) => {
+                self.value = previous;
+                true
+            }
+            None => false,
         }
     }
 }
@@ -137,7 +162,7 @@ mod tests {
 
     #[test]
     fn goal_reached_when_equal_or_above() {
-        let mut counter = Counter::with_goal(2);
+        let mut counter = Counter::new(0, 2);
         assert_eq!(counter.goal_reached(), Some(false));
         counter.apply(CounterAction::Add(2));
         assert_eq!(counter.goal_reached(), Some(true)); // égal = atteint
@@ -160,5 +185,59 @@ mod tests {
         counter.apply(CounterAction::Add(3));
         counter.apply(CounterAction::Subtract(10));
         assert_eq!(counter.value(), 0);
+    }
+
+    #[test]
+    fn new_starts_at_given_value() {
+        let counter = Counter::new(152, 10);
+        assert_eq!(counter.value(), 152);
+        assert_eq!(counter.goal(), 10);
+    }
+
+    #[test]
+    fn reset_sets_zero_and_can_be_undone() {
+        let mut counter = Counter::new(152, 0);
+        counter.reset();
+        assert_eq!(counter.value(), 0);
+        assert!(counter.undo_reset());
+        assert_eq!(counter.value(), 152);
+    }
+
+    #[test]
+    fn undo_works_only_once() {
+        let mut counter = Counter::new(152, 0);
+        counter.reset();
+        assert!(counter.undo_reset());
+        assert!(!counter.undo_reset()); // plus rien à annuler
+        assert_eq!(counter.value(), 152);
+    }
+
+    #[test]
+    fn nothing_to_undo_without_reset() {
+        let mut counter = Counter::new(152, 0);
+        assert!(!counter.undo_reset());
+        assert_eq!(counter.value(), 152);
+    }
+
+    #[test]
+    fn counting_after_reset_forbids_undo() {
+        // Après un reset, on recompte : le reset était voulu, on ne peut plus l'annuler.
+        let mut counter = Counter::new(152, 0);
+        counter.reset();
+        counter.apply(CounterAction::Add(1));
+        assert!(!counter.undo_reset());
+        assert_eq!(counter.value(), 1);
+    }
+
+    #[test]
+    fn undo_restores_the_last_reset_only() {
+        // 152 → reset → (annulation impossible après recompte) … on vérifie qu'un 2e reset
+        // retient bien la valeur de juste avant LUI.
+        let mut counter = Counter::new(152, 0);
+        counter.reset();
+        counter.apply(CounterAction::Add(7));
+        counter.reset();
+        assert!(counter.undo_reset());
+        assert_eq!(counter.value(), 7);
     }
 }

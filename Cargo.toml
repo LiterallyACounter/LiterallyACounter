@@ -17,6 +17,12 @@ eframe = { version = "0.37.0", default-features = false, features = ["glow", "de
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "hound"] }
 # Accès à l'identifiant système de la fenêtre (déjà utilisé par eframe : aucun poids en plus).
 raw-window-handle = "0.6.2"
+# Sauvegarde : `serde` transforme nos structs en données (et inversement), grâce à
+# `#[derive(Serialize, Deserialize)]` ; `serde_json` lit et écrit ces données en JSON.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+# Dossier de configuration standard du système (%APPDATA% sous Windows, ~/.config sous Linux…).
+dirs = "7.0.0"
 
 # Dépendances utilisées uniquement quand on compile pour Windows.
 [target.'cfg(windows)'.dependencies]

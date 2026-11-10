@@ -11,6 +11,8 @@
 use std::collections::HashSet;
 
 use super::{Key, Shortcut};
+use crate::command::Command;
+#[cfg(test)]
 use crate::counter::CounterAction;
 
 pub struct Matcher {
@@ -29,8 +31,8 @@ impl Matcher {
         }
     }
 
-    /// À appeler quand une touche est enfoncée. Renvoie les actions à déclencher (souvent aucune).
-    pub fn key_down(&mut self, key: Key) -> Vec<CounterAction> {
+    /// À appeler quand une touche est enfoncée. Renvoie les commandes à déclencher (souvent aucune).
+    pub fn key_down(&mut self, key: Key) -> Vec<Command> {
         // `insert` renvoie `false` si la touche était DÉJÀ dans l'ensemble :
         // c'est la répétition automatique d'une touche maintenue → on ignore (règle 3).
         if !self.pressed.insert(key) {
@@ -59,7 +61,7 @@ impl Matcher {
         matching
             .into_iter()
             .filter(|s| s.held.len() == most_precise)
-            .map(|s| s.action)
+            .map(|s| s.command)
             .collect()
     }
 
@@ -96,17 +98,17 @@ mod tests {
             Shortcut {
                 held: vec![],
                 trigger: Key::NUMPAD_ADD,
-                action: CounterAction::Add(1),
+                command: Command::Count(CounterAction::Add(1)),
             },
             Shortcut {
                 held: vec![],
                 trigger: Key::NUMPAD_SUBTRACT,
-                action: CounterAction::Subtract(1),
+                command: Command::Count(CounterAction::Subtract(1)),
             },
             Shortcut {
                 held: vec![Key::CONTROL],
                 trigger: Key::NUMPAD_ADD,
-                action: CounterAction::Add(5),
+                command: Command::Count(CounterAction::Add(5)),
             },
         ])
     }
@@ -114,7 +116,10 @@ mod tests {
     #[test]
     fn single_key_triggers_its_action() {
         let mut m = test_matcher();
-        assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![CounterAction::Add(1)]);
+        assert_eq!(
+            m.key_down(Key::NUMPAD_ADD),
+            vec![Command::Count(CounterAction::Add(1))]
+        );
     }
 
     #[test]
@@ -128,7 +133,10 @@ mod tests {
         // On avance (Z tenu) et on appuie sur Num + : +1 quand même.
         let mut m = test_matcher();
         m.key_down(Z);
-        assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![CounterAction::Add(1)]);
+        assert_eq!(
+            m.key_down(Key::NUMPAD_ADD),
+            vec![Command::Count(CounterAction::Add(1))]
+        );
     }
 
     #[test]
@@ -136,7 +144,10 @@ mod tests {
         // Ctrl tenu puis Num + : +5 seulement, PAS +1 en plus.
         let mut m = test_matcher();
         m.key_down(Key::CONTROL);
-        assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![CounterAction::Add(5)]);
+        assert_eq!(
+            m.key_down(Key::NUMPAD_ADD),
+            vec![Command::Count(CounterAction::Add(5))]
+        );
     }
 
     #[test]
@@ -151,7 +162,10 @@ mod tests {
     fn held_key_repeat_is_ignored() {
         // Windows répète l'appui tant que la touche est maintenue : une seule action.
         let mut m = test_matcher();
-        assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![CounterAction::Add(1)]);
+        assert_eq!(
+            m.key_down(Key::NUMPAD_ADD),
+            vec![Command::Count(CounterAction::Add(1))]
+        );
         assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![]);
         assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![]);
     }
@@ -161,7 +175,10 @@ mod tests {
         let mut m = test_matcher();
         m.key_down(Key::NUMPAD_ADD);
         m.key_up(Key::NUMPAD_ADD);
-        assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![CounterAction::Add(1)]);
+        assert_eq!(
+            m.key_down(Key::NUMPAD_ADD),
+            vec![Command::Count(CounterAction::Add(1))]
+        );
     }
 
     #[test]
@@ -169,7 +186,10 @@ mod tests {
         let mut m = test_matcher();
         m.key_down(Key::CONTROL);
         m.key_up(Key::CONTROL);
-        assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![CounterAction::Add(1)]);
+        assert_eq!(
+            m.key_down(Key::NUMPAD_ADD),
+            vec![Command::Count(CounterAction::Add(1))]
+        );
     }
 
     #[test]
@@ -179,6 +199,9 @@ mod tests {
         let mut m = test_matcher();
         m.key_down(Key::NUMPAD_ADD);
         m.forget_released(|_| false); // `|_| false` : fonction qui répond « relâchée » pour toute touche
-        assert_eq!(m.key_down(Key::NUMPAD_ADD), vec![CounterAction::Add(1)]);
+        assert_eq!(
+            m.key_down(Key::NUMPAD_ADD),
+            vec![Command::Count(CounterAction::Add(1))]
+        );
     }
 }

@@ -1,0 +1,146 @@
+//! Sauvegarde de l'état (la valeur du compteur global) dans un fichier JSON.
+//!
+//! - Emplacement : le dossier de configuration standard du système, fourni par la crate `dirs`
+//!   (Windows : `%APPDATA%\LiterallyACounter\state.json`).
+//! - Écriture « atomique » : on écrit d'abord un fichier temporaire, puis on le RENOMME à la place
+//!   de l'ancien. Le renommage est instantané : en cas de coupure pendant l'écriture, l'ancien
+//!   fichier reste intact.
+//! - Fichier illisible (abîmé, modifié à la main de travers) : on le met de côté
+//!   (`state.json.corrupt`) au lieu de l'écraser, pour ne pas perdre la valeur.
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+// `Serialize` / `Deserialize` : traits de `serde`. Avec `#[derive(...)]`, serde génère tout seul
+// le code qui convertit la struct en JSON et inversement.
+use serde::{Deserialize, Serialize};
+
+const APP_FOLDER: &str = "LiterallyACounter";
+const STATE_FILE: &str = "state.json";
+
+/// Ce qui est sauvegardé.
+///
+/// `#[serde(default)]` : si un champ manque dans le fichier (par ex. un fichier écrit par une
+/// version plus ancienne de l'appli), on prend sa valeur par défaut au lieu d'échouer.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SavedState {
+    /// Valeur du compteur global.
+    pub global_value: u64,
+}
+
+/// Le chemin du fichier de sauvegarde, ou `None` si le système ne fournit pas de dossier
+/// de configuration (très rare).
+pub fn state_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join(APP_FOLDER).join(STATE_FILE))
+}
+
+/// Lit l'état sauvegardé. Fichier absent → état par défaut (premier lancement).
+/// Fichier illisible → mis de côté, et état par défaut.
+pub fn load(path: &Path) -> SavedState {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        // Premier lancement : pas encore de fichier, ce n'est pas une erreur.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return SavedState::default(),
+        Err(error) => {
+            eprintln!("Lecture impossible de {} : {error}", path.display());
+            return SavedState::default();
+        }
+    };
+
+    // `serde_json::from_str` : du texte JSON vers notre struct. Le type voulu est indiqué
+    // par l'annotation `Result<SavedState, _>` (`_` : « devine le type de l'erreur »).
+    let parsed: Result<SavedState, _> = serde_json::from_str(&content);
+    match parsed {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!("Sauvegarde illisible ({error}) : mise de côté.");
+            let _ = fs::rename(path, path.with_extension("json.corrupt"));
+            SavedState::default()
+        }
+    }
+}
+
+/// Écrit l'état, de façon atomique.
+/// `io::Result<()>` : rien en cas de succès (`()`), une erreur d'entrée/sortie sinon.
+pub fn save(path: &Path, state: &SavedState) -> io::Result<()> {
+    // Crée le dossier s'il n'existe pas encore (premier lancement).
+    if let Some(folder) = path.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    // `to_string_pretty` : JSON indenté, lisible à la main.
+    // `map_err` : convertit l'erreur de serde en erreur d'entrée/sortie, pour que `?` fonctionne.
+    let json = serde_json::to_string_pretty(state).map_err(io::Error::other)?;
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, json)?;
+    // Remplace l'ancien fichier par le nouveau, en une seule opération.
+    fs::rename(&temporary, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Un dossier de test unique et vide, dans le dossier temporaire du système.
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lac-test-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn missing_file_gives_default_state() {
+        let path = test_dir("missing").join("state.json");
+        assert_eq!(load(&path), SavedState::default());
+    }
+
+    #[test]
+    fn save_then_load_gives_the_same_state() {
+        let dir = test_dir("roundtrip");
+        let path = dir.join("state.json");
+        let state = SavedState { global_value: 152 };
+        save(&path, &state).expect("la sauvegarde doit réussir");
+        assert_eq!(load(&path), state);
+        // Le fichier temporaire ne doit pas rester.
+        assert!(!dir.join("state.json.tmp").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_overwrites_previous_state() {
+        let dir = test_dir("overwrite");
+        let path = dir.join("state.json");
+        save(&path, &SavedState { global_value: 1 }).unwrap();
+        save(&path, &SavedState { global_value: 2 }).unwrap();
+        assert_eq!(load(&path).global_value, 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_file_is_set_aside_not_lost() {
+        let dir = test_dir("corrupt");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, "{ ceci n'est pas du JSON").unwrap();
+        assert_eq!(load(&path), SavedState::default());
+        assert!(dir.join("state.json.corrupt").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_field_takes_its_default() {
+        let dir = test_dir("oldformat");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        fs::write(&path, "{}").unwrap();
+        assert_eq!(load(&path).global_value, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn json_is_human_readable() {
+        let json = serde_json::to_string_pretty(&SavedState { global_value: 152 }).unwrap();
+        assert_eq!(json, "{\n  \"global_value\": 152\n}");
+    }
+}
