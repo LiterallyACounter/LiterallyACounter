@@ -470,3 +470,36 @@ Il faut créer sa file de messages avant de publier son identifiant (`PeekMessag
 ### Capturer une combinaison
 
 Les touches sont notées dans l'ordre d'appui. Au premier relâchement, la dernière touche enfoncée devient la touche de déclenchement, les autres sont les touches à tenir. Logique pure dans `capture.rs`, testée sans clavier.
+
+## Étape 8c-8e : menu des compteurs, molette, raccourcis dans le menu
+
+### Une petite fenêtre pour le menu
+
+egui ne peut pas dessiner hors de la fenêtre en cours : un menu plus grand qu'un compteur serait coupé. Le menu est donc un viewport « immediate » à part, ouvert sous le compteur, qui se ferme quand il perd le focus (`i.viewport().focused == Some(false)`, après l'avoir eu).
+
+- `Option<CounterMenu>` sert de petit automate : `None` = fermé, `Some(menu)` = ouvert avec son état (valeur saisie, position, taille).
+- `ui.rect_contains_pointer(rect)` : la souris est-elle au-dessus ? Le bouton « ••• » n'est dessiné qu'à ce moment-là.
+- Un widget ajouté après un autre est « au-dessus » et reçoit le clic à sa place : cliquer « ••• » ne compte pas +1.
+- `MenuAction::OpenSettings | MenuAction::EditShortcuts => ...` : un seul bras de `match` pour deux variantes.
+
+### Raw Input, côté Rust
+
+- Une **union** (`RAWINPUT_0`) : plusieurs types rangés au même endroit, selon l'en-tête. Lire un de ses champs demande `unsafe`, car le compilateur ne sait pas lequel est valide ; c'est l'en-tête (`dwType == RIM_TYPEMOUSE`) qui le garantit.
+- `buttons.usButtonData as i16` : la rotation de la molette est un nombre signé rangé dans un champ non signé. `as` réinterprète les bits.
+- `flags & 0x0400 != 0` : tester un bit avec le « et » bit à bit.
+- Fenêtre « message-only » (`HWND_MESSAGE`) : une fenêtre jamais affichée, qui sert juste à recevoir des messages (`WM_INPUT`).
+
+### Logique pure, encore
+
+- `WheelAccumulator` : les fractions de cran s'additionnent (`while total >= 120 { ... }`) ; `signum()` donne le signe pour repérer un changement de sens.
+- `RateMonitor` : la fréquence des événements par tranches de 2 s, testée en simulant le temps (`Instant + Duration`).
+- `shortcuts_for` : `filter_map` garde les `Some(...)` et écarte les `None` ; `(!liste.is_empty()).then_some(...)` fabrique l'`Option`.
+- `.map(|(_, s)| s.len()).sum()` : additionner les longueurs (le type du total est déduit de l'usage).
+
+### Le BOM
+
+Un fichier « UTF-8 avec BOM » commence par le caractère invisible `'\u{feff}'`. `content.strip_prefix('\u{feff}').unwrap_or(&content)` le retire s'il est là. Leçon : un fichier modifiable à la main doit tolérer les habitudes des éditeurs.
+
+### Tester sans gêner le jeu
+
+Les tests manuels pilotés par script vérifient, juste avant chaque clic ou touche simulés, que la fenêtre au premier plan appartient bien au compteur. Sinon, ils s'arrêtent : un clic simulé pourrait partir dans le jeu.
