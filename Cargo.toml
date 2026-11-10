@@ -10,6 +10,10 @@ edition = "2024"
 #   est cassée par la capture OBS, et glow est bien plus léger ;
 # - "default_fonts" : les polices intégrées d'egui (les polices système viendront à l'étape 8).
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts"] }
+# Bibliothèque de fenêtres utilisée par eframe (déjà embarquée : même version, aucun poids en plus).
+# On s'en sert directement pour une seule chose : couper son abonnement aux mouvements bruts de la
+# souris et du clavier (« Raw Input »), inutile ici et coûteux (redessin à chaque mouvement).
+winit = { version = "0.30.13", default-features = false }
 # Audio. On désactive tout par défaut et on n'active que :
 # - "playback" : la lecture sur un périphérique audio (via cpal) ;
 # - "hound" : un décodeur WAV léger (les sons Windows sont en WAV).

@@ -29,6 +29,7 @@ use i18n::{Language, Text};
 use native_window::NativeWindow;
 use reset::ResetConfirmation;
 use storage::SavedState;
+use winit::event_loop::{DeviceEvents, EventLoop};
 
 /// Langue de l'interface (détectée et réglable à l'étape 10).
 const LANGUAGE: Language = Language::French;
@@ -323,6 +324,18 @@ fn default_shortcuts() -> Vec<Shortcut> {
         shortcut(&[Key::CONTROL], Key::NUMPAD_0, Command::Reset),
         shortcut(&[], Key::NUMPAD_ENTER, Command::ConfirmReset),
         shortcut(&[Key::CONTROL], Key::NUMPAD_DECIMAL, Command::UndoReset),
+        // Souris (étape 6).
+        shortcut(
+            &[Key::CONTROL],
+            Key::MOUSE_MIDDLE,
+            Command::Count(CounterAction::Add(1)),
+        ),
+        shortcut(&[], Key::MOUSE_X2, Command::Count(CounterAction::Add(1))),
+        shortcut(
+            &[],
+            Key::MOUSE_X1,
+            Command::Count(CounterAction::Subtract(1)),
+        ),
     ]
 }
 
@@ -337,7 +350,17 @@ fn main() -> eframe::Result {
         ..DisplayStyle::default()
     };
 
-    let shortcuts = default_shortcuts();
+    // On écarte les raccourcis non autorisés (clic gauche / droit sans touche de modification).
+    // `partition` : sépare une liste en deux selon une condition (autorisés / refusés).
+    let (shortcuts, refused): (Vec<_>, Vec<_>) = default_shortcuts()
+        .into_iter()
+        .partition(Shortcut::is_allowed);
+    for shortcut in &refused {
+        eprintln!(
+            "Raccourci ignoré (clic gauche/droit sans Ctrl, Maj ou Alt) : {}",
+            i18n::shortcut_name(shortcut, LANGUAGE)
+        );
+    }
     // Le nom de la touche de validation est TIRÉ DES RACCOURCIS : si on la change, le message suit.
     // `.find(...)` : le premier raccourci qui valide un reset (`None` s'il n'y en a pas).
     let confirm_key_name = shortcuts
@@ -364,7 +387,16 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
-    eframe::run_native(
+    // On crée nous-mêmes la « boucle d'événements » (la boucle qui reçoit les messages de Windows)
+    // au lieu de laisser `eframe::run_native` le faire, pour pouvoir la régler AVANT de démarrer :
+    // par défaut, winit s'abonne à TOUS les mouvements bruts de la souris quand la fenêtre a le
+    // focus, et eframe redessine à chaque mouvement (jusqu'à 20 % d'un cœur mesuré). On n'en a pas
+    // besoin : `DeviceEvents::Never` coupe cet abonnement.
+    // `?` : en cas d'erreur, on quitte `main` tout de suite en renvoyant cette erreur.
+    let event_loop = EventLoop::<eframe::UserEvent>::with_user_event().build()?;
+    event_loop.listen_device_events(DeviceEvents::Never);
+
+    let mut app = eframe::create_native(
         "Literally A Counter",
         options,
         // `cc` (« creation context ») donne accès au contexte egui au démarrage.
@@ -400,5 +432,8 @@ fn main() -> eframe::Result {
                 state_path,
             }))
         }),
-    )
+        &event_loop,
+    );
+    event_loop.run_app(&mut app)?;
+    Ok(())
 }
