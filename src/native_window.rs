@@ -37,6 +37,25 @@ impl NativeWindow {
         }
     }
 
+    /// Cherche une fenêtre de NOTRE programme d'après son titre. Sert pour les fenêtres
+    /// supplémentaires (« viewports ») d'egui, dont eframe ne fournit pas l'identifiant.
+    /// Le titre doit donc être unique dans l'appli.
+    pub fn find_by_title(title: &str) -> Option<Self> {
+        #[cfg(windows)]
+        return windows::find_own_window(title).map(|hwnd| Self { hwnd });
+        #[cfg(not(windows))]
+        {
+            let _ = title;
+            None
+        }
+    }
+
+    /// Cache la fenêtre de la barre des tâches ET d'Alt + Tab (fenêtre « outil »).
+    pub fn hide_from_task_switcher(&self) {
+        #[cfg(windows)]
+        windows::hide_from_task_switcher(self.hwnd);
+    }
+
     /// Retire liseré, coins arrondis, ombre et ligne du haut ajoutés par Windows / winit.
     pub fn remove_decorations(&self) {
         #[cfg(windows)]
@@ -65,17 +84,83 @@ mod windows {
     };
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GWL_STYLE, GetWindowLongW, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW, SetWindowPos, WM_NCACTIVATE,
-        WM_NCCALCSIZE, WM_NCPAINT, WM_STYLECHANGING, WS_CAPTION, WS_POPUP, WS_THICKFRAME,
+        FindWindowExW, GWL_EXSTYLE, GWL_STYLE, GetWindowLongW, GetWindowThreadProcessId,
+        STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, SetWindowLongW, SetWindowPos, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT,
+        WM_STYLECHANGING, WS_CAPTION, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_POPUP, WS_THICKFRAME,
     };
 
     /// Identifiant de notre « sous-classe » (n'importe quel nombre unique pour nous).
     const SUBCLASS_ID: usize = 1;
+    /// Identifiant de la sous-classe qui garde la fenêtre hôte hors d'Alt + Tab.
+    const TOOL_WINDOW_SUBCLASS_ID: usize = 2;
 
     /// Messages internes non documentés de Windows, absents de `windows-sys`.
     const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
     const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
+
+    pub fn find_own_window(title: &str) -> Option<isize> {
+        // Windows attend un texte UTF-16 terminé par un 0.
+        // `encode_utf16` : les caractères en UTF-16 ; `chain(once(0))` : on ajoute le 0 final.
+        let title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut previous: HWND = null_mut();
+        // `loop` : boucle infinie, dont on sort avec `return`.
+        loop {
+            // Fenêtre suivante portant ce titre, après `previous` (toutes applis confondues).
+            // SÉCURITÉ : `title` est un texte UTF-16 valide terminé par 0, vivant pendant l'appel.
+            let hwnd = unsafe { FindWindowExW(null_mut(), previous, null_mut(), title.as_ptr()) };
+            if hwnd.is_null() {
+                return None;
+            }
+            // On vérifie qu'elle appartient bien à NOTRE programme (une autre instance de l'appli
+            // ouverte en même temps aurait les mêmes titres).
+            let mut process_id = 0;
+            // SÉCURITÉ : `hwnd` vient d'être renvoyé par Windows ; `process_id` est modifiable.
+            unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
+            if process_id == std::process::id() {
+                return Some(hwnd as isize);
+            }
+            previous = hwnd;
+        }
+    }
+
+    pub fn hide_from_task_switcher(hwnd: isize) {
+        let hwnd = hwnd as HWND;
+        // winit réécrit le style étendu après la création de la fenêtre (« fenêtre d'appli »,
+        // visible dans Alt + Tab). Comme pour la barre de titre, une sous-classe corrige chaque
+        // changement de style avant qu'il ne s'applique (voir `tool_window_proc`).
+        // SÉCURITÉ : `tool_window_proc` a la signature attendue ; lecture puis écriture du style
+        // étendu d'une fenêtre valide.
+        unsafe {
+            SetWindowSubclass(hwnd, Some(tool_window_proc), TOOL_WINDOW_SUBCLASS_ID, 0);
+            let style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            SetWindowLongW(hwnd, GWL_EXSTYLE, as_tool_window(style) as i32);
+        }
+    }
+
+    /// Sous-classe de la fenêtre hôte : garde le style « fenêtre outil ».
+    unsafe extern "system" fn tool_window_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _subclass_id: usize,
+        _ref_data: usize,
+    ) -> LRESULT {
+        if message == WM_STYLECHANGING && wparam as i32 == GWL_EXSTYLE {
+            // SÉCURITÉ : pour ce message, Windows garantit que `lparam` pointe vers un
+            // STYLESTRUCT valide et modifiable pendant l'appel.
+            let change = unsafe { &mut *(lparam as *mut STYLESTRUCT) };
+            change.styleNew = as_tool_window(change.styleNew);
+        }
+        // SÉCURITÉ : on retransmet exactement les paramètres reçus.
+        unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+    }
+
+    /// « Fenêtre outil » : absente de la barre des tâches et d'Alt + Tab.
+    fn as_tool_window(style: u32) -> u32 {
+        (style | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW
+    }
 
     pub fn remove_decorations(hwnd: isize) {
         let hwnd = hwnd as HWND;

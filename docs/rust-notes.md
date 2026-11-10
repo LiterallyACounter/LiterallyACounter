@@ -330,3 +330,86 @@ event_loop.run_app(&mut app)?;
 
 - `EventLoop::<eframe::UserEvent>` : on précise le **paramètre de type** (le type des messages internes d'eframe) avec la syntaxe « turbofish » `::<...>`.
 - `?` dans `main` : `main` renvoie un `eframe::Result`, donc une erreur de winit est convertie automatiquement (`From`) et fait quitter le programme proprement.
+
+## Étape 7 : un global et une partie, plusieurs fenêtres
+
+### Un enum comme identifiant
+
+```rust
+pub enum CounterId { Global, Round }
+impl CounterId {
+    pub const ALL: [CounterId; 2] = [CounterId::Global, CounterId::Round];
+}
+```
+
+- Un enum **sans donnée** désigne un compteur : impossible d'en citer un qui n'existe pas (un numéro pourrait valoir 7).
+- `CounterId::ALL` : une constante pour parcourir tous les compteurs avec `for id in CounterId::ALL`.
+- `[T; 2]` : un tableau de taille **fixe**, connue à la compilation (contrairement à `Vec`).
+
+### Des variantes qui portent plusieurs données
+
+```rust
+pub enum Command {
+    Count(Targets, CounterAction), // quels compteurs + quelle action
+    Reset(CounterId),
+    ConfirmReset,
+    UndoReset,
+}
+```
+
+- `match` peut viser une variante **et** sa donnée : `Command::Reset(CounterId::Round) => ...`.
+- Une **garde** affine un cas : `CounterId::Round if round_copies_global => global`.
+
+### Renvoyer ce qu'il faut faire plutôt que le faire
+
+`Tracker::handle` ne joue pas de son et n'écrit pas de fichier : il renvoie un `Outcome { sound, save, reset_prompt_started }`, et `main.rs` l'exécute. La logique reste pure, donc testable sans haut-parleur ni disque.
+
+- `#[derive(Default)]` + `..Outcome::default()` : on n'écrit que les champs utiles, les autres valent `None` / `false`.
+- `Option::take()` : récupère la valeur et laisse `None` à sa place (une annulation ne sert qu'une fois).
+- `is_some_and(|id| ...)` : vrai si c'est `Some` **et** que la condition est vraie.
+- `if let Some(a) = x && let Some(b) = y { ... }` : deux motifs dans un même `if` (édition 2024).
+
+### Emprunter un élément précis
+
+```rust
+fn counter_mut(&mut self, id: CounterId) -> &mut Counter {
+    match id {
+        CounterId::Global => &mut self.global,
+        CounterId::Round => &mut self.round,
+    }
+}
+```
+
+On prête **un champ** de `self` en modification. Tant que cet emprunt vit, on ne peut pas toucher à `self` ailleurs : c'est pourquoi `counter_ui` **clone** le style avant de dessiner, puis note le clic et ne l'exécute (`self.handle(...)`) qu'après le dessin.
+
+### Les durées de vie (`'a`)
+
+```rust
+fn effective_style<'a>(id: CounterId, global: &'a DisplayStyle, round: &'a DisplayStyle,
+                       copies: bool) -> &'a DisplayStyle
+```
+
+La fonction renvoie un **emprunt**. `'a` dit au compilateur à quoi il est emprunté : à l'un des deux styles reçus. Le résultat ne peut donc pas vivre plus longtemps qu'eux. Avec un seul paramètre emprunté, Rust devine seul ; avec deux, il faut le préciser.
+
+### Sauvegarder un type étranger avec serde
+
+- `#[serde(with = "color_hex")]` : quand un type (ici `Color32` d'egui) ne sait pas se sauvegarder, on fournit un module avec deux fonctions, `serialize` et `deserialize`. Les couleurs s'écrivent `"#RRGGBBAA"`.
+- `#[serde(rename_all = "lowercase")]` : les variantes d'un enum s'écrivent `"left"`, `"center"`, `"right"`.
+- `#[serde(default)]` sur une struct : chaque champ absent prend sa valeur par défaut. L'ancien fichier `{"global_value": 14}` se relit donc sans perte.
+- `impl Default` écrit à la main quand le défaut automatique (`false`, 0) ne convient pas (fenêtres affichées par défaut).
+
+### Plusieurs fenêtres avec egui
+
+- `ctx.show_viewport_immediate(id, builder, |ui, _| { ... })` : une fenêtre supplémentaire, dessinée **tout de suite** par la closure. Elle peut emprunter `self` : pas besoin de partager les données entre threads (`Arc<Mutex>`), contrairement aux viewports « deferred ».
+- Une fenêtre qu'on cesse d'afficher est fermée par egui ; la ré-afficher la recrée (à une nouvelle position).
+- `ctx.input_for(autre_id, |i| ...)` : lire l'état (position, taille) d'une **autre** fenêtre.
+- **Fenêtre hôte invisible** : eframe ne redessine une fenêtre racine réduite qu'une fois toutes les 100 ms au plus. La racine est donc un pixel transparent jamais réduit, et toutes les vraies fenêtres en dépendent : réduire la fenêtre principale ne retarde ni l'affichage ni le son.
+
+### Itérateurs, suite
+
+- `enumerate()` : des paires (numéro, élément).
+- `std::iter::once(x).chain(autres)` : une suite qui commence par `x`, puis continue avec `autres`.
+- `max_by(|a, b| a.total_cmp(b))` : le plus grand élément ; `total_cmp` compare deux `f32` (qui n'ont pas d'ordre « simple » à cause de NaN).
+- `fold(depart, |acc, x| ...)` : parcourt la liste en faisant évoluer un résultat (ici, un maximum ou un minimum).
+- `all(|r| ...)` : vrai si **tous** les éléments vérifient la condition (le pendant de `any`).
+- `?` dans une boucle d'une fonction qui renvoie `Option` : à la première valeur `None`, on sort de la fonction.

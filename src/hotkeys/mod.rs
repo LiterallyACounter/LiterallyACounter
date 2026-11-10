@@ -117,12 +117,13 @@ pub fn mouse_keys_used(shortcuts: &[Shortcut]) -> Vec<Key> {
 mod tests {
     use super::*;
     use crate::counter::CounterAction;
+    use crate::tracker::Targets;
 
     fn shortcut(held: &[Key], trigger: Key) -> Shortcut {
         Shortcut {
             held: held.to_vec(),
             trigger,
-            command: Command::Count(CounterAction::Add(1)),
+            command: Command::Count(Targets::BOTH, CounterAction::Add(1)),
         }
     }
 
