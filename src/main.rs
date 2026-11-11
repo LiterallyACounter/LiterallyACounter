@@ -224,6 +224,8 @@ struct App {
     audio_output: Option<String>,
     /// Volume général, de 0.0 à 1.0.
     volume: f32,
+    /// Muet général : aucun son (comptage, « Écouter », bip de test).
+    all_muted: bool,
     /// Les sorties audio disponibles (relues quand on ouvre la liste).
     audio_outputs: Vec<audio::OutputDevice>,
     /// La sortie par défaut de Windows, relue au plus une fois par seconde dans l'onglet Son
@@ -255,6 +257,7 @@ impl App {
         let outcome = self.tracker.handle(command, now);
         // `if let A && let B` : les deux motifs doivent correspondre (un son ET un moteur audio).
         if let Some((counter, slot)) = outcome.sound
+            && !self.all_muted
             && let Some(audio) = &mut self.audio
         {
             audio.play(counter, slot);
@@ -297,6 +300,8 @@ impl App {
             language: self.language.clone(),
             round_copies_global_sounds: Some(self.round_copies_global_sounds),
             open_sections: self.sections.clone(),
+            all_muted: self.all_muted,
+            sound_priority: self.tracker.sound_priority,
         };
         if let Err(error) = storage::save(path, &state) {
             eprintln!("Sauvegarde impossible : {error}");
@@ -334,12 +339,13 @@ impl App {
         (text, style.text_color(counter.goal_reached()))
     }
 
-    /// La fenêtre principale : la configuration, en deux onglets.
+    /// La fenêtre principale : la configuration, en quatre onglets.
     fn main_window(&mut self, ctx: &egui::Context) {
+        // Assez large pour les raccourcis en deux colonnes (touche, compteurs visés, ×).
         let builder = egui::ViewportBuilder::default()
             .with_title(i18n::text(Text::ConfigWindowTitle))
-            .with_inner_size([520.0, 640.0])
-            .with_min_inner_size([360.0, 240.0]);
+            .with_inner_size([720.0, 640.0])
+            .with_min_inner_size([620.0, 240.0]);
         // `show_viewport_immediate` : affiche une fenêtre supplémentaire, dessinée TOUT DE SUITE
         // par la closure. La closure peut donc emprunter `self` (pas besoin de partager les
         // données entre threads, contrairement aux viewports « deferred »).
@@ -581,14 +587,28 @@ impl App {
                 ui.label(i18n::text(Text::Volume));
                 // Le curseur travaille en pourcents (0 à 100), le moteur en 0.0 à 1.0.
                 let mut percent = (self.volume * 100.0).round();
-                let response = ui.add(
-                    egui::Slider::new(&mut percent, 0.0..=100.0)
-                        .suffix(" %")
-                        .step_by(1.0)
-                        .fixed_decimals(0), // « 100 % » et non « 100.0 % »
-                );
+                // `ui.horizontal(...)` renvoie le résultat de la closure dans `.inner` :
+                // ici, la réponse du curseur (pour savoir s'il a bougé ou été relâché).
+                let response = ui
+                    .horizontal(|ui| {
+                        let response = ui.add(
+                            egui::Slider::new(&mut percent, 0.0..=100.0)
+                                .suffix(" %")
+                                .step_by(1.0)
+                                .fixed_decimals(0), // « 100 % » et non « 100.0 % »
+                        );
+                        // Le muet général, juste à droite du volume.
+                        if config_window::mute_toggle(ui, &mut self.all_muted, Text::MuteAllTooltip)
+                        {
+                            self.save_state();
+                        }
+                        response
+                    })
+                    .inner;
                 if response.changed() {
                     self.volume = percent / 100.0;
+                    // Régler un nouveau volume réactive le son.
+                    self.all_muted = false;
                     if let Some(audio) = &mut self.audio {
                         audio.set_volume(self.volume);
                     }
@@ -603,6 +623,31 @@ impl App {
                     }
                     self.save_state();
                 }
+                ui.end_row();
+
+                // Le son joué quand un raccourci fait compter les deux compteurs.
+                ui.label(i18n::text(Text::SoundPriority))
+                    .on_hover_text(i18n::text(Text::SoundPriorityTooltip));
+                ui.horizontal(|ui| {
+                    for (id, label) in [
+                        (CounterId::Global, Text::PriorityGlobal),
+                        (CounterId::Round, Text::PriorityRound),
+                    ] {
+                        // `selectable_value` : un bouton « enfoncé » quand la valeur est la
+                        // sienne ; un clic y met la valeur. Deux boutons = un interrupteur.
+                        if ui
+                            .selectable_value(
+                                &mut self.tracker.sound_priority,
+                                id,
+                                i18n::text(label),
+                            )
+                            .on_hover_text(i18n::text(Text::SoundPriorityTooltip))
+                            .changed()
+                        {
+                            self.save_state();
+                        }
+                    }
+                });
                 ui.end_row();
             });
 
@@ -687,7 +732,9 @@ impl App {
     fn on_sound_request(&mut self, ctx: &egui::Context, id: CounterId, request: SoundRequest) {
         match request {
             SoundRequest::Preview(choice) => {
-                if let Some(audio) = &mut self.audio {
+                if !self.all_muted
+                    && let Some(audio) = &mut self.audio
+                {
                     audio.preview(&choice);
                 }
             }
@@ -774,7 +821,9 @@ impl App {
         } else {
             self.audio_output = output;
         }
-        if let Some(audio) = &mut self.audio {
+        if !self.all_muted
+            && let Some(audio) = &mut self.audio
+        {
             audio.play_test_beep();
         }
         self.save_state();
@@ -1675,11 +1724,15 @@ fn main() -> eframe::Result {
             });
 
             Ok(Box::new(App {
-                tracker: Tracker::new(
-                    Counter::new(saved.global_value, saved.global_goal),
-                    // La partie repart TOUJOURS de 0 (sa valeur n'est jamais sauvegardée).
-                    Counter::new(0, saved.round_goal),
-                ),
+                tracker: {
+                    let mut tracker = Tracker::new(
+                        Counter::new(saved.global_value, saved.global_goal),
+                        // La session repart TOUJOURS de 0 (sa valeur n'est jamais sauvegardée).
+                        Counter::new(0, saved.round_goal),
+                    );
+                    tracker.sound_priority = saved.sound_priority;
+                    tracker
+                },
                 events: receiver,
                 hotkeys,
                 audio: AudioEngine::new(saved.audio_output.clone(), saved.volume),
@@ -1706,6 +1759,7 @@ fn main() -> eframe::Result {
                 sections: saved.open_sections.clone(),
                 audio_output: saved.audio_output.clone(),
                 volume: saved.volume,
+                all_muted: saved.all_muted,
                 audio_outputs: audio::list_outputs(),
                 default_output: None,
                 output_error: None,

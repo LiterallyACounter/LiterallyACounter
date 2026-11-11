@@ -231,11 +231,11 @@ fn reset_display(style: &DisplayStyle, defaults: &DisplayStyle) -> DisplayStyle 
 /// Le bouton « haut-parleur » : coupe ou réactive un son. Dessiné à la main (la police
 /// intégrée n'a pas toutes les icônes) : un haut-parleur, avec des ondes s'il est actif,
 /// une croix s'il est coupé. Renvoie `true` si l'état a changé.
-fn mute_toggle(ui: &mut egui::Ui, muted: &mut bool) -> bool {
+pub fn mute_toggle(ui: &mut egui::Ui, muted: &mut bool, tooltip: Text) -> bool {
     let size = egui::vec2(26.0, 20.0);
     // `allocate_exact_size` : réserve la place et donne la réponse (clic, survol).
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let response = response.on_hover_text(t(Text::MuteTooltip));
+    let response = response.on_hover_text(t(tooltip));
     let visuals = ui.style().interact(&response);
     let painter = ui.painter();
     painter.rect_filled(rect, 4.0, visuals.weak_bg_fill);
@@ -422,7 +422,7 @@ pub fn sound_editor(
                 if ui.button(t(Text::Listen)).clicked() {
                     request = Some(SoundRequest::Preview(settings.sound.clone()));
                 }
-                changed |= mute_toggle(ui, &mut settings.muted);
+                changed |= mute_toggle(ui, &mut settings.muted, Text::MuteTooltip);
                 ui.end_row();
             }
         });
@@ -603,86 +603,30 @@ pub fn shortcuts_editor(
     ui.add_space(8.0);
 
     let conflicts = hotkeys::conflicts(shortcuts);
-    // Une section par action : son nom en gras, puis un raccourci par ligne, puis « + ».
-    for kind in CommandKind::ALL {
-        ui.strong(i18n::command_kind_name(kind));
-        // `indent` : décale le contenu vers la droite, sous le nom de l'action.
-        // `kind` sert d'identifiant à egui pour distinguer les sections.
-        ui.indent(kind, |ui| {
-            for (index, shortcut) in shortcuts.iter().enumerate() {
-                if CommandKind::of(shortcut.command) != Some(kind) {
-                    continue; // pas dans cette section
-                }
-                let target = CaptureTarget {
-                    kind,
-                    replace: Some(index),
-                };
-                // Une ligne : la combinaison, ⚠ éventuel, les compteurs visés, ×.
-                ui.horizontal(|ui| {
-                    if capturing == Some(target) {
-                        if ui.button(t(Text::PressShortcut)).clicked() {
-                            request = Some(ShortcutRequest::CancelCapture);
-                        }
-                    } else if ui
-                        .add_enabled(idle, egui::Button::new(i18n::shortcut_name(shortcut)))
-                        .clicked()
-                    {
-                        request = Some(ShortcutRequest::StartCapture(target));
-                    }
-                    // Molette en mode interrogation : le raccourci ne peut pas fonctionner.
-                    if mouse_method == MouseMethod::Polling && shortcut.uses_wheel() {
-                        ui.label(egui::RichText::new(" ! ").strong().color(warning))
-                            .on_hover_text(t(Text::WheelNeedsRawInput));
-                    }
-                    if conflicts[index] {
-                        // « ! » plutôt que « ⚠ », absent de la police intégrée d'egui.
-                        ui.label(egui::RichText::new(" ! ").strong().color(warning))
-                            .on_hover_text(t(Text::ShortcutConflict));
-                    }
-                    // Les actions qui comptent : choix des compteurs visés.
-                    if let Command::Count(targets, _) = shortcut.command {
-                        ui.add_enabled_ui(idle, |ui| {
-                            egui::ComboBox::from_id_salt(("targets", index))
-                                .selected_text(i18n::targets_name(targets))
-                                .show_ui(ui, |ui| {
-                                    for choice in [
-                                        Targets::BOTH,
-                                        Targets::only(CounterId::Global),
-                                        Targets::only(CounterId::Round),
-                                    ] {
-                                        let label = i18n::targets_name(choice);
-                                        if ui.selectable_label(choice == targets, label).clicked() {
-                                            request =
-                                                Some(ShortcutRequest::SetTargets(index, choice));
-                                        }
-                                    }
-                                });
-                        });
-                    }
-                    if ui
-                        .add_enabled(idle, egui::Button::new("×"))
-                        .on_hover_text(t(Text::RemoveShortcut))
-                        .clicked()
-                    {
-                        request = Some(ShortcutRequest::Remove(index));
-                    }
-                });
-            }
-            // Le bouton d'ajout, ou l'invite si on est en train d'ajouter dans cette section.
-            let target = CaptureTarget {
-                kind,
-                replace: None,
-            };
-            if capturing == Some(target) {
-                if ui.button(t(Text::PressShortcut)).clicked() {
-                    request = Some(ShortcutRequest::CancelCapture);
-                }
-            } else if ui
-                .add_enabled(idle, egui::Button::new(" + "))
-                .on_hover_text(t(Text::AddShortcut))
-                .clicked()
-            {
-                request = Some(ShortcutRequest::StartCapture(target));
+    // Les actions vont par paires, sur deux colonnes : +1 | −1, +5 | −5, puis (après un trait)
+    // reset de la session | reset du global, valider | annuler. `CommandKind::ALL` est déjà
+    // dans cet ordre ; `chunks(2)` le découpe en paires.
+    for (row, pair) in CommandKind::ALL.chunks(2).enumerate() {
+        if row == 2 {
+            // Un trait horizontal sépare le comptage des resets.
+            ui.add_space(4.0);
+            ui.separator();
+            ui.add_space(4.0);
+        }
+        // `columns(2, ...)` : partage la largeur en deux colonnes égales ; `columns[0]` est
+        // celle de gauche. Chaque paire a sa propre rangée, donc les titres restent alignés.
+        ui.columns(2, |columns| {
+            for (column, &kind) in columns.iter_mut().zip(pair) {
+                // Les colonnes d'egui étirent les boutons sur toute leur largeur : on revient
+                // à une disposition normale (de haut en bas, alignée à gauche, sans étirer).
+                let layout = egui::Layout::top_down(egui::Align::Min);
+                let found = column
+                    .with_layout(layout, |ui| {
+                        kind_editor(ui, kind, shortcuts, capturing, &conflicts, mouse_method)
+                    })
+                    .inner;
+                // `or` : on garde une demande déjà trouvée, sinon celle de cette colonne.
+                request = request.or(found);
             }
         });
         ui.add_space(6.0);
@@ -734,6 +678,101 @@ pub fn shortcuts_editor(
     if clicked {
         sections.insert("shortcuts_advanced".to_string(), !open);
     }
+    request
+}
+
+/// Une action de l'onglet Raccourcis : son nom en gras, puis un raccourci par ligne
+/// (combinaison, alertes, compteurs visés, ×), puis le bouton « + ».
+fn kind_editor(
+    ui: &mut egui::Ui,
+    kind: CommandKind,
+    shortcuts: &[Shortcut],
+    capturing: Option<CaptureTarget>,
+    conflicts: &[bool],
+    mouse_method: MouseMethod,
+) -> Option<ShortcutRequest> {
+    let mut request = None;
+    let idle = capturing.is_none();
+    let warning = ui.visuals().warn_fg_color;
+    ui.strong(i18n::command_kind_name(kind));
+    // `indent` : décale le contenu vers la droite, sous le nom de l'action.
+    // `kind` sert d'identifiant à egui pour distinguer les sections.
+    ui.indent(kind, |ui| {
+        for (index, shortcut) in shortcuts.iter().enumerate() {
+            if CommandKind::of(shortcut.command) != Some(kind) {
+                continue; // pas dans cette section
+            }
+            let target = CaptureTarget {
+                kind,
+                replace: Some(index),
+            };
+            // Une ligne : la combinaison, ⚠ éventuel, les compteurs visés, ×.
+            ui.horizontal(|ui| {
+                if capturing == Some(target) {
+                    if ui.button(t(Text::PressShortcut)).clicked() {
+                        request = Some(ShortcutRequest::CancelCapture);
+                    }
+                } else if ui
+                    .add_enabled(idle, egui::Button::new(i18n::shortcut_name(shortcut)))
+                    .clicked()
+                {
+                    request = Some(ShortcutRequest::StartCapture(target));
+                }
+                // Molette en mode interrogation : le raccourci ne peut pas fonctionner.
+                if mouse_method == MouseMethod::Polling && shortcut.uses_wheel() {
+                    ui.label(egui::RichText::new(" ! ").strong().color(warning))
+                        .on_hover_text(t(Text::WheelNeedsRawInput));
+                }
+                if conflicts[index] {
+                    // « ! » plutôt que « ⚠ », absent de la police intégrée d'egui.
+                    ui.label(egui::RichText::new(" ! ").strong().color(warning))
+                        .on_hover_text(t(Text::ShortcutConflict));
+                }
+                // Les actions qui comptent : choix des compteurs visés.
+                if let Command::Count(targets, _) = shortcut.command {
+                    ui.add_enabled_ui(idle, |ui| {
+                        egui::ComboBox::from_id_salt(("targets", index))
+                            .selected_text(i18n::targets_name(targets))
+                            .show_ui(ui, |ui| {
+                                for choice in [
+                                    Targets::BOTH,
+                                    Targets::only(CounterId::Global),
+                                    Targets::only(CounterId::Round),
+                                ] {
+                                    let label = i18n::targets_name(choice);
+                                    if ui.selectable_label(choice == targets, label).clicked() {
+                                        request = Some(ShortcutRequest::SetTargets(index, choice));
+                                    }
+                                }
+                            });
+                    });
+                }
+                if ui
+                    .add_enabled(idle, egui::Button::new("×"))
+                    .on_hover_text(t(Text::RemoveShortcut))
+                    .clicked()
+                {
+                    request = Some(ShortcutRequest::Remove(index));
+                }
+            });
+        }
+        // Le bouton d'ajout, ou l'invite si on est en train d'ajouter dans cette section.
+        let target = CaptureTarget {
+            kind,
+            replace: None,
+        };
+        if capturing == Some(target) {
+            if ui.button(t(Text::PressShortcut)).clicked() {
+                request = Some(ShortcutRequest::CancelCapture);
+            }
+        } else if ui
+            .add_enabled(idle, egui::Button::new(" + "))
+            .on_hover_text(t(Text::AddShortcut))
+            .clicked()
+        {
+            request = Some(ShortcutRequest::StartCapture(target));
+        }
+    });
     request
 }
 

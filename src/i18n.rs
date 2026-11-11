@@ -241,6 +241,16 @@ pub enum Text {
     RoundUsesGlobalSounds,
     /// Bulle de l'icône haut-parleur.
     MuteTooltip,
+    /// Bulle du muet général.
+    MuteAllTooltip,
+    /// Libellé : son prioritaire.
+    SoundPriority,
+    /// Bulle du son prioritaire.
+    SoundPriorityTooltip,
+    /// Bouton : priorité au global.
+    PriorityGlobal,
+    /// Bouton : priorité à la session.
+    PriorityRound,
     /// Bulle d'aide du format.
     TooltipFormat,
     /// Bulle d'aide de l'ancrage.
@@ -380,6 +390,11 @@ impl Text {
             Text::ResetDisplay => "reset-display",
             Text::RoundUsesGlobalSounds => "round-uses-global-sounds",
             Text::MuteTooltip => "mute-tooltip",
+            Text::MuteAllTooltip => "mute-all-tooltip",
+            Text::SoundPriority => "sound-priority",
+            Text::SoundPriorityTooltip => "sound-priority-tooltip",
+            Text::PriorityGlobal => "priority-global",
+            Text::PriorityRound => "priority-round",
             Text::TooltipFormat => "tooltip-format",
             Text::TooltipAnchor => "tooltip-anchor",
             Text::TooltipAlwaysOnTop => "tooltip-always-on-top",
@@ -401,7 +416,7 @@ impl Text {
 
     /// Tous les textes (pour vérifier qu'aucune traduction intégrée n'en oublie).
     #[cfg(test)]
-    pub const ALL: [Text; 117] = [
+    pub const ALL: [Text; 122] = [
         Text::LanguageLabel,
         Text::ResetPrompt,
         Text::GlobalWindowTitle,
@@ -503,6 +518,11 @@ impl Text {
         Text::ResetDisplay,
         Text::RoundUsesGlobalSounds,
         Text::MuteTooltip,
+        Text::MuteAllTooltip,
+        Text::SoundPriority,
+        Text::SoundPriorityTooltip,
+        Text::PriorityGlobal,
+        Text::PriorityRound,
         Text::TooltipFormat,
         Text::TooltipAnchor,
         Text::TooltipAlwaysOnTop,

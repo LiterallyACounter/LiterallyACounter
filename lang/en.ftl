@@ -16,7 +16,7 @@ reset-prompt = Reset? ({ $key } to confirm)
 # Titre de la fenêtre du compteur global (visible dans la barre des tâches et OBS).
 global-window-title = Literally A Counter: total
 # Titre de la fenêtre du compteur de partie.
-round-window-title = Literally A Counter: round
+round-window-title = Literally A Counter: session
 # Titre de la fenêtre de configuration.
 config-window-title = Literally A Counter: settings
 # Onglet des compteurs.
@@ -28,7 +28,7 @@ quit = Quit
 # Titre de la section du global.
 global-counter = Total counter
 # Titre de la section de la partie.
-round-counter = Round counter
+round-counter = Session counter
 # Case « afficher la fenêtre ».
 show-window = Show the window
 # Objectif d'un compteur.
@@ -68,15 +68,15 @@ goal-reached-color = Goal reached
 # Couleur des alertes.
 alert-color = Alerts ("Reset?")
 # Compteurs visés : les deux.
-target-both = total and round
+target-both = total and session
 # Compteurs visés : le global.
 target-global = total
 # Compteurs visés : la partie.
-target-round = round
+target-round = session
 # Action reset du global.
 action-reset-global = Reset the total
 # Action reset de la partie.
-action-reset-round = Reset the round
+action-reset-round = Reset the session
 # Action valider le reset.
 action-confirm-reset = Confirm the reset
 # Action annuler le reset.
@@ -212,6 +212,16 @@ reset-display = Restore default display
 round-uses-global-sounds = Use the total's sounds
 # Bulle de l'icône haut-parleur.
 mute-tooltip = Mute or unmute this sound
+# Bulle du muet général.
+mute-all-tooltip = Mute or unmute all sounds (moving the volume unmutes)
+# Libellé : son prioritaire.
+sound-priority = Priority sound
+# Bulle du son prioritaire.
+sound-priority-tooltip = When a shortcut counts on both counters, only one sound plays: the one of the counter chosen here.
+# Bouton : priorité au global.
+priority-global = Total
+# Bouton : priorité à la session.
+priority-round = Session
 # Bulle d'aide du format.
 tooltip-format = The displayed text. Variables in braces are replaced by the value, the goal…
 # Bulle d'aide de l'ancrage.
@@ -221,7 +231,7 @@ tooltip-always-on-top = Keeps the counter above other windows, the game included
 # Bulle d'aide du fond transparent.
 tooltip-transparent = Only the text is visible: ideal for OBS.
 # Bulle d'aide de la copie de l'affichage.
-tooltip-copy-display = The round takes the total's format, font and colours (not the goal).
+tooltip-copy-display = The session takes the total's format, font and colours (not the goal).
 # Bulle d'aide de Raw Input.
 tooltip-raw-input = Receives every mouse event: no missed click, wheel notches available.
 # Bulle d'aide de l'interrogation.
@@ -237,7 +247,7 @@ guide-title = How to use
 # Mode d'emploi : compter.
 guide-count = Counting: press the shortcuts (Shortcuts tab), even while the game has the focus. Left / right click on a counter: +1 / −1.
 # Mode d'emploi : reset.
-guide-reset = Reset: the round's is immediate; the total's shows "Reset?", to confirm within 3 seconds. A mistake? "Undo the last reset".
+guide-reset = Reset: the session's is immediate; the total's shows "Reset?", to confirm within 3 seconds. A mistake? "Undo the last reset".
 # Mode d'emploi : déplacer, cacher.
 guide-move = Moving a counter: drag it with the mouse. Esc hides it (like unticking "Show the window").
 # Mode d'emploi : stream.

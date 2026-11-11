@@ -15,8 +15,8 @@ language-label = Langue
 reset-prompt = Reset ? ({ $key } pour valider)
 # Titre de la fenêtre du compteur global (visible dans la barre des tâches et OBS).
 global-window-title = Literally A Counter : global
-# Titre de la fenêtre du compteur de partie.
-round-window-title = Literally A Counter : partie
+# Titre de la fenêtre du compteur de session.
+round-window-title = Literally A Counter : session
 # Titre de la fenêtre de configuration.
 config-window-title = Literally A Counter : configuration
 # Onglet des compteurs.
@@ -27,8 +27,8 @@ tab-shortcuts = Raccourcis
 quit = Quitter
 # Titre de la section du global.
 global-counter = Compteur global
-# Titre de la section de la partie.
-round-counter = Compteur de partie
+# Titre de la section de la session.
+round-counter = Compteur de session
 # Case « afficher la fenêtre ».
 show-window = Afficher la fenêtre
 # Objectif d'un compteur.
@@ -68,15 +68,15 @@ goal-reached-color = Objectif atteint
 # Couleur des alertes.
 alert-color = Alertes (« Reset ? »)
 # Compteurs visés : les deux.
-target-both = global et partie
+target-both = global et session
 # Compteurs visés : le global.
 target-global = global
-# Compteurs visés : la partie.
-target-round = partie
+# Compteurs visés : la session.
+target-round = session
 # Action reset du global.
 action-reset-global = Reset du global
-# Action reset de la partie.
-action-reset-round = Reset de la partie
+# Action reset de la session.
+action-reset-round = Reset de la session
 # Action valider le reset.
 action-confirm-reset = Valider le reset
 # Action annuler le reset.
@@ -208,10 +208,20 @@ advanced-section = Avancé
 colors-section = Couleurs du texte
 # Bouton : rétablir l'affichage par défaut.
 reset-display = Rétablir l'affichage par défaut
-# Case : la partie utilise les sons du global.
+# Case : la session utilise les sons du global.
 round-uses-global-sounds = Utiliser les sons du global
 # Bulle de l'icône haut-parleur.
 mute-tooltip = Couper ou réactiver ce son
+# Bulle du muet général.
+mute-all-tooltip = Couper ou réactiver tous les sons (bouger le volume les réactive)
+# Libellé : son prioritaire.
+sound-priority = Son prioritaire
+# Bulle du son prioritaire.
+sound-priority-tooltip = Quand un raccourci fait compter les deux compteurs, un seul son est joué : celui du compteur choisi ici.
+# Bouton : priorité au global.
+priority-global = Global
+# Bouton : priorité à la session.
+priority-round = Session
 # Bulle d'aide du format.
 tooltip-format = Le texte affiché. Les variables entre accolades sont remplacées par la valeur, l'objectif…
 # Bulle d'aide de l'ancrage.
@@ -221,7 +231,7 @@ tooltip-always-on-top = Garde le compteur au-dessus des autres fenêtres, jeu co
 # Bulle d'aide du fond transparent.
 tooltip-transparent = Seul le texte est visible : idéal pour OBS.
 # Bulle d'aide de la copie de l'affichage.
-tooltip-copy-display = La partie prend le format, la police et les couleurs du global (pas l'objectif).
+tooltip-copy-display = La session prend le format, la police et les couleurs du global (pas l'objectif).
 # Bulle d'aide de Raw Input.
 tooltip-raw-input = Reçoit tous les événements de la souris : aucun clic manqué, crans de molette disponibles.
 # Bulle d'aide de l'interrogation.
@@ -237,7 +247,7 @@ guide-title = Mode d'emploi
 # Mode d'emploi : compter.
 guide-count = Compter : appuie sur les raccourcis (onglet Raccourcis), même quand le jeu a le focus. Clic gauche / droit sur un compteur : +1 / −1.
 # Mode d'emploi : reset.
-guide-reset = Reset : celui de la partie est immédiat ; celui du global affiche « Reset ? », à valider dans les 3 secondes. Une erreur ? « Annuler le dernier reset ».
+guide-reset = Reset : celui de la session est immédiat ; celui du global affiche « Reset ? », à valider dans les 3 secondes. Une erreur ? « Annuler le dernier reset ».
 # Mode d'emploi : déplacer, cacher.
 guide-move = Déplacer un compteur : glisse-le avec la souris. Échap le cache (comme décocher « Afficher la fenêtre »).
 # Mode d'emploi : stream.
