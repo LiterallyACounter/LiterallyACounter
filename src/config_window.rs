@@ -11,6 +11,7 @@ use egui::color_picker::{Alpha, color_edit_button_srgba};
 use crate::LANGUAGE;
 use crate::command::{Command, CommandKind};
 use crate::display::{Anchor, DisplayStyle};
+use crate::fonts::FontLibrary;
 use crate::hotkeys::{self, Key, MouseMethod, Shortcut};
 use crate::i18n::{self, Text};
 use crate::tracker::{CounterId, Targets};
@@ -23,7 +24,15 @@ fn t(text: Text) -> String {
 /// Les réglages d'affichage d'un compteur, présentés en grille (libellé | contrôle).
 /// `id_salt` : un identifiant propre à chaque compteur, car egui doit distinguer
 /// les deux grilles affichées dans la même fenêtre.
-pub fn style_editor(ui: &mut egui::Ui, id_salt: &str, style: &mut DisplayStyle) -> bool {
+/// `fonts` : les polices (liste et chargement) ; `in_use` : les polices des compteurs,
+/// à garder en mémoire.
+pub fn style_editor(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    style: &mut DisplayStyle,
+    fonts: &mut FontLibrary,
+    in_use: &[&str],
+) -> bool {
     let mut changed = false;
 
     // L'aide du format, AU-DESSUS de la grille : dans une cellule de grille, le texte ne peut
@@ -37,6 +46,12 @@ pub fn style_editor(ui: &mut egui::Ui, id_salt: &str, style: &mut DisplayStyle) 
         .show(ui, |ui| {
             ui.label(t(Text::Template));
             changed |= ui.text_edit_singleline(&mut style.template).changed();
+            ui.end_row();
+
+            ui.label(t(Text::Font));
+            ui.horizontal(|ui| {
+                changed |= font_picker(ui, id_salt, style, fonts, in_use);
+            });
             ui.end_row();
 
             // `DragValue` : un nombre qu'on modifie en glissant la souris, ou en cliquant pour
@@ -119,6 +134,73 @@ pub fn style_editor(ui: &mut egui::Ui, id_salt: &str, style: &mut DisplayStyle) 
                 ui.end_row();
             }
         });
+    changed
+}
+
+/// Le choix de la police : une liste déroulante avec recherche, puis un aperçu de la police
+/// survolée (ou choisie). Renvoie `true` si la police a changé.
+fn font_picker(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    style: &mut DisplayStyle,
+    fonts: &mut FontLibrary,
+    in_use: &[&str],
+) -> bool {
+    let mut changed = false;
+    let mut hovered: Option<String> = None;
+    let current = style.font.clone().unwrap_or_else(|| t(Text::DefaultFont));
+    egui::ComboBox::from_id_salt((id_salt, "font"))
+        .selected_text(current)
+        .width(200.0)
+        .height(320.0)
+        // Par défaut, egui ferme la liste à TOUT clic, même dedans : on ne pourrait pas
+        // cliquer dans le champ de recherche. On la ferme nous-mêmes au choix d'une police.
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            // Le texte recherché est rangé dans la mémoire d'egui (`data_mut`), propre à ce
+            // champ : il survit d'une image à l'autre sans champ dédié dans notre appli.
+            let search_id = ui.scope_id().with("search");
+            let mut search: String = ui.data_mut(|d| d.get_temp(search_id).unwrap_or_default());
+            ui.add(egui::TextEdit::singleline(&mut search).hint_text(t(Text::SearchFont)));
+            ui.data_mut(|d| d.insert_temp(search_id, search.clone()));
+
+            if ui
+                .selectable_label(style.font.is_none(), t(Text::DefaultFont))
+                .clicked()
+            {
+                style.font = None;
+                changed = true;
+                ui.close(); // referme la liste
+            }
+            let needle = search.to_lowercase();
+            // Une copie des noms filtrés : `fonts` resservira juste après pour l'aperçu.
+            let names: Vec<String> = fonts
+                .system_fonts()
+                .iter()
+                .filter(|font| font.name.to_lowercase().contains(&needle))
+                .map(|font| font.name.clone())
+                .collect();
+            for name in names {
+                let selected = style.font.as_deref() == Some(name.as_str());
+                let response = ui.selectable_label(selected, &name);
+                if response.hovered() {
+                    hovered = Some(name.clone());
+                }
+                if response.clicked() {
+                    style.font = Some(name);
+                    changed = true;
+                    ui.close();
+                }
+            }
+        });
+
+    // Aperçu : la police survolée dans la liste, sinon la police choisie. À DROITE de la
+    // liste (en dessous, la liste ouverte le cacherait), avec un texte court pour tenir.
+    if let Some(name) = hovered.or_else(|| style.font.clone()) {
+        fonts.preview(ui.ctx(), &name, in_use);
+        let font = fonts.font_id(ui.ctx(), Some(&name), 22.0);
+        ui.label(egui::RichText::new("0123").font(font));
+    }
     changed
 }
 

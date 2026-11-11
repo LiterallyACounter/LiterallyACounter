@@ -30,6 +30,8 @@ pub enum Anchor {
 pub struct DisplayStyle {
     /// Modèle de format, par ex. `{value}[ / {goal}]`.
     pub template: String,
+    /// Police installée sur l'ordinateur, par son nom (`None` : police par défaut d'egui).
+    pub font: Option<String>,
     pub font_size: f32,
     /// Couleur de fond. Transparent (`#00000000`) = seul le texte est visible.
     /// La fenêtre est TOUJOURS transparente : c'est nous qui dessinons ce fond (aux coins arrondis).
@@ -62,6 +64,7 @@ impl Default for DisplayStyle {
     fn default() -> Self {
         Self {
             template: "{value}[ / {goal}]".into(),
+            font: None,
             font_size: 48.0,
             background: Color32::from_rgb(30, 30, 30),
             corner_radius: 8,

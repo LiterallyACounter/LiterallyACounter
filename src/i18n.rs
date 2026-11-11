@@ -147,6 +147,12 @@ pub enum Text {
     EditShortcuts,
     /// Titre de la mini-fenêtre du bouton « ••• » (jamais visible).
     MenuButtonWindowTitle,
+    /// Choix de la police.
+    Font,
+    /// Police par défaut.
+    DefaultFont,
+    /// Champ de recherche de police.
+    SearchFont,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -307,6 +313,12 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::EditShortcuts, Language::English) => "Edit…",
         (Text::MenuButtonWindowTitle, Language::French) => "Literally A Counter : bouton du menu",
         (Text::MenuButtonWindowTitle, Language::English) => "Literally A Counter: menu button",
+        (Text::Font, Language::French) => "Police",
+        (Text::Font, Language::English) => "Font",
+        (Text::DefaultFont, Language::French) => "Police par défaut",
+        (Text::DefaultFont, Language::English) => "Default font",
+        (Text::SearchFont, Language::French) => "Rechercher…",
+        (Text::SearchFont, Language::English) => "Search…",
     }
 }
 

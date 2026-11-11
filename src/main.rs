@@ -9,6 +9,7 @@ mod command;
 mod config_window;
 mod counter;
 mod display;
+mod fonts;
 mod format;
 mod hotkeys;
 mod i18n;
@@ -197,6 +198,8 @@ struct App {
     /// soit relâché : glisser un curseur change la valeur à chaque image, et on ne veut pas
     /// réécrire le fichier 60 fois par seconde.
     unsaved_changes: bool,
+    /// Les polices installées, chargées à la demande.
+    fonts: fonts::FontLibrary,
     /// Le menu d'un compteur, s'il est ouvert.
     menu: Option<CounterMenu>,
     /// Le bouton « ••• », s'il est affiché.
@@ -401,9 +404,22 @@ impl App {
             }
         });
 
+        // Les polices utilisées par les compteurs : à garder en mémoire.
+        let in_use: Vec<String> = [&self.global_style.font, &self.round_style.font]
+            .into_iter()
+            .flatten() // `flatten` sur des `Option` : garde les `Some`, écarte les `None`
+            .cloned()
+            .collect();
+        let in_use: Vec<&str> = in_use.iter().map(String::as_str).collect();
         match id {
             CounterId::Global => {
-                changed |= config_window::style_editor(ui, "global_style", &mut self.global_style);
+                changed |= config_window::style_editor(
+                    ui,
+                    "global_style",
+                    &mut self.global_style,
+                    &mut self.fonts,
+                    &in_use,
+                );
             }
             CounterId::Round => {
                 // `|=` : « ou » cumulatif (`changed` reste vrai s'il l'était déjà).
@@ -417,8 +433,13 @@ impl App {
                 // (`add_enabled_ui(false, ...)` désactive tout ce qui est dessiné dedans).
                 let enabled = !self.round_copies_global;
                 ui.add_enabled_ui(enabled, |ui| {
-                    changed |=
-                        config_window::style_editor(ui, "round_style", &mut self.round_style);
+                    changed |= config_window::style_editor(
+                        ui,
+                        "round_style",
+                        &mut self.round_style,
+                        &mut self.fonts,
+                        &in_use,
+                    );
                 });
             }
         }
@@ -593,11 +614,17 @@ impl App {
         let galley = if id == CounterId::Global && self.tracker.reset_pending(now) {
             // Message de reset : la fenêtre GARDE sa taille (sinon elle peut sortir de l'écran).
             // C'est le texte qui s'adapte : retour à la ligne, puis police réduite si besoin.
-            layout_in_current_window(ui, &style, text, color)
+            let family = self
+                .fonts
+                .font_id(ui.ctx(), style.font.as_deref(), style.font_size)
+                .family;
+            layout_in_current_window(ui, &style, family, text, color)
         } else {
             // Compteur : texte sur une ligne, et c'est la fenêtre qui s'ajuste à lui,
             // en respectant l'ancrage.
-            let font = egui::FontId::proportional(style.font_size);
+            let font = self
+                .fonts
+                .font_id(ui.ctx(), style.font.as_deref(), style.font_size);
             let galley = ui.painter().layout_no_wrap(text, font, color);
             let margins = egui::Vec2::splat(2.0 * style.margin);
             fit_window(
@@ -1021,6 +1048,7 @@ fn fit_window(
 fn layout_in_current_window(
     ui: &egui::Ui,
     style: &DisplayStyle,
+    family: egui::FontFamily,
     text: String,
     color: egui::Color32,
 ) -> std::sync::Arc<egui::Galley> {
@@ -1033,7 +1061,7 @@ fn layout_in_current_window(
 
     // Une mise en page à une taille donnée : texte coupé à la largeur disponible, centré.
     let layout = |size: f32| {
-        let font = egui::FontId::proportional(size);
+        let font = egui::FontId::new(size, family.clone());
         let mut job = egui::text::LayoutJob::simple(text.clone(), font, color, available.x);
         job.halign = egui::Align::Center;
         ui.painter().layout_job(job)
@@ -1069,6 +1097,14 @@ impl eframe::App for App {
         // On traite tous les événements reçus depuis la dernière image.
         // `try_recv` ne bloque pas : il renvoie `Ok(événement)` s'il y en a un, une erreur sinon.
         // `while let` : boucle tant que le motif correspond (ici, tant qu'il y a des événements).
+        // Les polices choisies pour les compteurs : chargées si besoin (sans effet si déjà fait).
+        for font in [&self.global_style.font, &self.round_style.font]
+            .into_iter()
+            .flatten()
+        {
+            self.fonts.require(&ctx, font);
+        }
+
         while let Ok(event) = self.events.try_recv() {
             match event {
                 HotkeyEvent::Command(command) => self.handle(command, now, &ctx),
@@ -1190,6 +1226,7 @@ fn main() -> eframe::Result {
                 shortcuts,
                 capture: None,
                 capture_error: None,
+                fonts: fonts::FontLibrary::default(),
                 menu: None,
                 menu_button: None,
                 hovered_counter: None,
