@@ -47,6 +47,7 @@ const INITIAL_COUNTER_SIZE: egui::Vec2 = egui::vec2(200.0, 100.0);
 enum ConfigTab {
     Counters,
     Shortcuts,
+    Sound,
 }
 
 /// Taille de la fenêtre du menu d'un compteur, sans la liste des raccourcis.
@@ -210,6 +211,17 @@ struct App {
     mouse_method: MouseMethod,
     /// Fréquence des événements souris, si elle est élevée (protection automatique).
     mouse_rate: Option<u32>,
+    /// Sortie audio choisie (`None` : celle par défaut de Windows).
+    audio_output: Option<String>,
+    /// Volume général, de 0.0 à 1.0.
+    volume: f32,
+    /// Les sorties audio disponibles (relues quand on ouvre la liste).
+    audio_outputs: Vec<audio::OutputDevice>,
+    /// La sortie par défaut de Windows, relue au plus une fois par seconde dans l'onglet Son
+    /// (la demander coûte ~4 ms).
+    default_output: Option<(Instant, Option<String>)>,
+    /// Message après le choix d'une sortie qui a refusé de s'ouvrir.
+    output_error: Option<String>,
     /// Fichier de sauvegarde (`None` si le système n'a pas de dossier de configuration).
     state_path: Option<PathBuf>,
 }
@@ -260,6 +272,8 @@ impl App {
             show_round: round.visible,
             shortcuts: self.shortcuts.clone(),
             mouse_method: self.mouse_method,
+            audio_output: self.audio_output.clone(),
+            volume: self.volume,
         };
         if let Err(error) = storage::save(path, &state) {
             eprintln!("Sauvegarde impossible : {error}");
@@ -323,6 +337,7 @@ impl App {
                     for (tab, label) in [
                         (ConfigTab::Counters, Text::TabCounters),
                         (ConfigTab::Shortcuts, Text::TabShortcuts),
+                        (ConfigTab::Sound, Text::TabSound),
                     ] {
                         ui.selectable_value(&mut self.tab, tab, i18n::text(label, LANGUAGE));
                     }
@@ -344,6 +359,7 @@ impl App {
                             ui.add_space(12.0);
                         }
                     }
+                    ConfigTab::Sound => self.sound_settings(ui),
                     ConfigTab::Shortcuts => {
                         let request = config_window::shortcuts_editor(
                             ui,
@@ -365,6 +381,188 @@ impl App {
                 self.unsaved_changes = false;
             }
         });
+    }
+
+    /// L'onglet Son : sortie audio et volume général.
+    fn sound_settings(&mut self, ui: &mut egui::Ui) {
+        if self.audio.is_none() {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                i18n::text(Text::NoAudio, LANGUAGE),
+            );
+            ui.add_space(8.0);
+        }
+        egui::Grid::new("sound_settings")
+            .num_columns(2)
+            .spacing([12.0, 10.0])
+            .show(ui, |ui| {
+                ui.label(i18n::text(Text::AudioOutput, LANGUAGE));
+                let default_label = i18n::text(Text::DefaultOutput, LANGUAGE);
+                // Le nom de la sortie choisie ; « introuvable » si elle n'est plus branchée.
+                let current = match &self.audio_output {
+                    None => default_label.clone(),
+                    Some(id) => match self.audio_outputs.iter().find(|o| &o.id == id) {
+                        Some(output) => output.name.clone(),
+                        None => i18n::text(Text::OutputMissing, LANGUAGE),
+                    },
+                };
+                let mut chosen = None;
+                egui::ComboBox::from_id_salt("audio_output")
+                    .selected_text(current)
+                    .width(300.0)
+                    .show_ui(ui, |ui| {
+                        // On relit la liste pendant qu'elle est ouverte : un casque branché
+                        // entre-temps apparaît.
+                        self.audio_outputs = audio::list_outputs();
+                        if ui
+                            .selectable_label(self.audio_output.is_none(), &default_label)
+                            .clicked()
+                        {
+                            chosen = Some(None);
+                        }
+                        for output in &self.audio_outputs {
+                            let selected = self.audio_output.as_ref() == Some(&output.id);
+                            if ui.selectable_label(selected, &output.name).clicked() {
+                                chosen = Some(Some(output.id.clone()));
+                            }
+                        }
+                    });
+                // `Some(choix)` : l'utilisateur a choisi (le choix lui-même peut être `None`).
+                if let Some(output) = chosen {
+                    self.choose_output(output);
+                }
+                ui.end_row();
+
+                // Une sortie choisie a refusé de s'ouvrir : on le dit (la sélection est revenue
+                // sur la précédente).
+                if let Some(error) = &self.output_error {
+                    ui.label("");
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(error).color(ui.visuals().warn_fg_color),
+                        )
+                        .wrap(),
+                    );
+                    ui.end_row();
+                }
+
+                // La sortie réellement utilisée diffère de celle voulue : on le dit.
+                if let Some(used) = self.used_output_warning() {
+                    ui.label("");
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(used).color(ui.visuals().warn_fg_color),
+                        )
+                        .wrap(),
+                    );
+                    ui.end_row();
+                }
+
+                ui.label(i18n::text(Text::Volume, LANGUAGE));
+                // Le curseur travaille en pourcents (0 à 100), le moteur en 0.0 à 1.0.
+                let mut percent = (self.volume * 100.0).round();
+                let response = ui.add(
+                    egui::Slider::new(&mut percent, 0.0..=100.0)
+                        .suffix(" %")
+                        .step_by(1.0)
+                        .fixed_decimals(0), // « 100 % » et non « 100.0 % »
+                );
+                if response.changed() {
+                    self.volume = percent / 100.0;
+                    if let Some(audio) = &mut self.audio {
+                        audio.set_volume(self.volume);
+                    }
+                }
+                // Au RELÂCHEMENT du curseur (ou après une saisie au clavier) : bip de test,
+                // puis sauvegarde.
+                let released =
+                    response.drag_stopped() || (response.changed() && !response.dragged());
+                if released {
+                    if let Some(audio) = &mut self.audio {
+                        audio.play_test_beep();
+                    }
+                    self.save_state();
+                }
+                ui.end_row();
+            });
+    }
+
+    /// Choisit une sortie audio (`None` : celle par défaut de Windows). Si une sortie précise
+    /// refuse de s'ouvrir (réservée par une autre appli…), on revient à la sortie précédente et
+    /// on le signale en nommant la sortie refusée.
+    fn choose_output(&mut self, output: Option<String>) {
+        let previous = self.audio_output.clone();
+        self.output_error = None;
+        match &mut self.audio {
+            Some(audio) => audio.set_output(output.clone()),
+            // Pas de son jusqu'ici : on retente d'ouvrir une sortie.
+            None => self.audio = AudioEngine::new(output.clone(), self.volume),
+        }
+        let refused = match (&output, &self.audio) {
+            (Some(id), Some(audio)) => audio.opened_output() != id,
+            _ => false,
+        };
+        if refused {
+            let name = self
+                .audio_outputs
+                .iter()
+                .find(|o| Some(&o.id) == output.as_ref())
+                .map_or_else(String::new, |o| o.name.clone());
+            self.output_error = Some(i18n::message(
+                Text::OutputRefused,
+                LANGUAGE,
+                &[("name", &name)],
+            ));
+            // Retour à la sortie précédente.
+            if let Some(audio) = &mut self.audio {
+                audio.set_output(previous.clone());
+            }
+            self.audio_output = previous;
+        } else {
+            self.audio_output = output;
+        }
+        if let Some(audio) = &mut self.audio {
+            audio.play_test_beep();
+        }
+        self.save_state();
+    }
+
+    /// Message si la sortie voulue (choisie, ou celle par défaut de Windows) n'a pas pu être
+    /// ouverte : le son passe alors par une autre, qu'on nomme. `None` si tout va bien.
+    fn used_output_warning(&mut self) -> Option<String> {
+        let opened = self.audio.as_ref()?.opened_output().to_string();
+        let wanted = match &self.audio_output {
+            Some(id) => {
+                // Choisie mais débranchée : déjà signalé par « Sortie introuvable ».
+                if !self.audio_outputs.iter().any(|o| &o.id == id) {
+                    return None;
+                }
+                id.clone()
+            }
+            None => {
+                let stale = self
+                    .default_output
+                    .as_ref()
+                    .is_none_or(|(at, _)| at.elapsed() > Duration::from_secs(1));
+                if stale {
+                    self.default_output = Some((Instant::now(), audio::default_output_id()));
+                }
+                self.default_output.as_ref()?.1.clone()?
+            }
+        };
+        if wanted == opened {
+            return None;
+        }
+        let name = self
+            .audio_outputs
+            .iter()
+            .find(|o| o.id == opened)
+            .map_or(opened.clone(), |o| o.name.clone());
+        Some(i18n::message(
+            Text::OutputUnavailable,
+            LANGUAGE,
+            &[("name", &name)],
+        ))
     }
 
     /// La section de configuration d'un compteur. Renvoie `true` si un réglage a changé.
@@ -1214,7 +1412,7 @@ fn main() -> eframe::Result {
                 ),
                 events: receiver,
                 hotkeys,
-                audio: AudioEngine::new(),
+                audio: AudioEngine::new(saved.audio_output.clone(), saved.volume),
                 windows: [
                     CounterWindow::new(CounterId::Global, saved.show_global),
                     CounterWindow::new(CounterId::Round, saved.show_round),
@@ -1232,6 +1430,11 @@ fn main() -> eframe::Result {
                 hovered_counter: None,
                 mouse_method: saved.mouse_method,
                 mouse_rate: None,
+                audio_output: saved.audio_output.clone(),
+                volume: saved.volume,
+                audio_outputs: audio::list_outputs(),
+                default_output: None,
+                output_error: None,
                 tab: ConfigTab::Counters,
                 unsaved_changes: false,
                 state_path,

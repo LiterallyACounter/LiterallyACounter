@@ -153,6 +153,22 @@ pub enum Text {
     DefaultFont,
     /// Champ de recherche de police.
     SearchFont,
+    /// Onglet du son.
+    TabSound,
+    /// Choix de la sortie audio.
+    AudioOutput,
+    /// Sortie par défaut de Windows.
+    DefaultOutput,
+    /// Sortie choisie mais débranchée.
+    OutputMissing,
+    /// Volume général.
+    Volume,
+    /// Aucune sortie audio.
+    NoAudio,
+    /// La sortie voulue refuse de s'ouvrir. Emplacement : `{name}` (sortie réellement utilisée).
+    OutputUnavailable,
+    /// Sortie choisie qui refuse de s'ouvrir. Emplacement : `{name}`.
+    OutputRefused,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -319,6 +335,36 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::DefaultFont, Language::English) => "Default font",
         (Text::SearchFont, Language::French) => "Rechercher…",
         (Text::SearchFont, Language::English) => "Search…",
+        (Text::TabSound, Language::French) => "Son",
+        (Text::TabSound, Language::English) => "Sound",
+        (Text::AudioOutput, Language::French) => "Sortie audio",
+        (Text::AudioOutput, Language::English) => "Audio output",
+        (Text::DefaultOutput, Language::French) => "Par défaut de Windows",
+        (Text::DefaultOutput, Language::English) => "Windows default",
+        (Text::OutputMissing, Language::French) => {
+            "Sortie introuvable : celle par défaut est utilisée"
+        }
+        (Text::OutputMissing, Language::English) => "Output not found: using the default one",
+        (Text::Volume, Language::French) => "Volume",
+        (Text::Volume, Language::English) => "Volume",
+        (Text::NoAudio, Language::French) => {
+            "Aucune sortie audio disponible : l'appli fonctionne sans son."
+        }
+        (Text::NoAudio, Language::English) => {
+            "No audio output available: the app works without sound."
+        }
+        (Text::OutputUnavailable, Language::French) => {
+            "Cette sortie n'a pas pu être ouverte (elle est peut-être réservée par une autre appli, comme Voicemeeter) : le son passe par « {name} »."
+        }
+        (Text::OutputUnavailable, Language::English) => {
+            "This output could not be opened (another app, such as Voicemeeter, may reserve it): sound goes to \"{name}\"."
+        }
+        (Text::OutputRefused, Language::French) => {
+            "« {name} » n'a pas pu être ouverte (elle est peut-être réservée par une autre appli, comme Voicemeeter) : la sortie précédente est conservée."
+        }
+        (Text::OutputRefused, Language::English) => {
+            "'{name}' could not be opened (another app, such as Voicemeeter, may reserve it): the previous output is kept."
+        }
     }
 }
 
