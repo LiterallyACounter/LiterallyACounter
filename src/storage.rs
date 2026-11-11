@@ -56,6 +56,8 @@ pub struct SavedState {
     pub audio_output: Option<String>,
     /// Volume général, de 0.0 à 1.0.
     pub volume: f32,
+    /// Langue de l'interface, par son code (`None` : pas encore choisie, celle de Windows).
+    pub language: Option<String>,
 }
 
 // Valeurs par défaut écrites à la main : les booléens doivent valoir `true` (le `derive`
@@ -75,6 +77,7 @@ impl Default for SavedState {
             mouse_method: MouseMethod::RawInput,
             audio_output: None,
             volume: 1.0,
+            language: None,
         }
     }
 }
@@ -217,6 +220,7 @@ mod tests {
         assert_eq!(state.mouse_method, MouseMethod::RawInput);
         assert_eq!(state.audio_output, None);
         assert_eq!(state.volume, 1.0);
+        assert_eq!(state.language, None);
         let _ = fs::remove_dir_all(&dir);
     }
 

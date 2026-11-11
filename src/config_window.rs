@@ -8,7 +8,6 @@
 use eframe::egui;
 use egui::color_picker::{Alpha, color_edit_button_srgba};
 
-use crate::LANGUAGE;
 use crate::audio::{self, SoundChoice, SoundSet, SoundSlot};
 use crate::command::{Command, CommandKind};
 use crate::display::{Anchor, DisplayStyle};
@@ -19,7 +18,7 @@ use crate::tracker::{CounterId, Targets};
 
 /// Un texte traduit dans la langue de l'interface (pour alléger l'écriture).
 fn t(text: Text) -> String {
-    i18n::text(text, LANGUAGE)
+    i18n::text(text)
 }
 
 /// Les réglages d'affichage d'un compteur, présentés en grille (libellé | contrôle).
@@ -184,9 +183,7 @@ pub fn sound_choice_name(choice: &SoundChoice) -> String {
                 None => format!("{frequency} Hz"),
             }
         }
-        SoundChoice::Imported(name) => {
-            i18n::message(Text::ImportedSound, LANGUAGE, &[("name", &stem(name))])
-        }
+        SoundChoice::Imported(name) => i18n::message(Text::ImportedSound, &[("name", &stem(name))]),
         // « pluck_002 » → « pluck 2 » : lisible, sans traduction à maintenir.
         SoundChoice::Embedded(name) => {
             let mut words = name.split('_');
@@ -437,11 +434,7 @@ pub fn shortcuts_editor(
     // Protection automatique : bandeau si la souris envoie trop d'événements (Raw Input).
     if let Some(rate) = mouse_rate {
         egui::Frame::group(ui.style()).show(ui, |ui| {
-            let text = i18n::message(
-                Text::MouseRateWarning,
-                LANGUAGE,
-                &[("rate", &rate.to_string())],
-            );
+            let text = i18n::message(Text::MouseRateWarning, &[("rate", &rate.to_string())]);
             ui.add(egui::Label::new(egui::RichText::new(text).color(warning)).wrap());
             if ui.button(t(Text::SwitchToPolling)).clicked() {
                 request = Some(ShortcutRequest::SetMouseMethod(MouseMethod::Polling));
@@ -479,7 +472,7 @@ pub fn shortcuts_editor(
     let conflicts = hotkeys::conflicts(shortcuts);
     // Une section par action : son nom en gras, puis un raccourci par ligne, puis « + ».
     for kind in CommandKind::ALL {
-        ui.strong(i18n::command_kind_name(kind, LANGUAGE));
+        ui.strong(i18n::command_kind_name(kind));
         // `indent` : décale le contenu vers la droite, sous le nom de l'action.
         // `kind` sert d'identifiant à egui pour distinguer les sections.
         ui.indent(kind, |ui| {
@@ -498,10 +491,7 @@ pub fn shortcuts_editor(
                             request = Some(ShortcutRequest::CancelCapture);
                         }
                     } else if ui
-                        .add_enabled(
-                            idle,
-                            egui::Button::new(i18n::shortcut_name(shortcut, LANGUAGE)),
-                        )
+                        .add_enabled(idle, egui::Button::new(i18n::shortcut_name(shortcut)))
                         .clicked()
                     {
                         request = Some(ShortcutRequest::StartCapture(target));
@@ -520,14 +510,14 @@ pub fn shortcuts_editor(
                     if let Command::Count(targets, _) = shortcut.command {
                         ui.add_enabled_ui(idle, |ui| {
                             egui::ComboBox::from_id_salt(("targets", index))
-                                .selected_text(i18n::targets_name(targets, LANGUAGE))
+                                .selected_text(i18n::targets_name(targets))
                                 .show_ui(ui, |ui| {
                                     for choice in [
                                         Targets::BOTH,
                                         Targets::only(CounterId::Global),
                                         Targets::only(CounterId::Round),
                                     ] {
-                                        let label = i18n::targets_name(choice, LANGUAGE);
+                                        let label = i18n::targets_name(choice);
                                         if ui.selectable_label(choice == targets, label).clicked() {
                                             request =
                                                 Some(ShortcutRequest::SetTargets(index, choice));
