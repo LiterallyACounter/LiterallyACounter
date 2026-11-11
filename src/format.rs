@@ -12,7 +12,7 @@
 //! - Doubler un caractère l'affiche littéralement : `{{` → `{`, `[[` → `[` (rarement utile).
 
 // La langue (virgule décimale, espace avant « % ») est définie dans le module `i18n`.
-use crate::i18n::Language;
+use crate::i18n::NumberFormat;
 
 /// Les valeurs disponibles pour le format.
 #[derive(Debug, Clone, Copy)]
@@ -59,7 +59,7 @@ impl Variable {
         !matches!(self, Variable::Value)
     }
 
-    fn render(self, values: Values, language: Language) -> String {
+    fn render(self, values: Values, numbers: &NumberFormat) -> String {
         match self {
             Variable::Value => values.value.to_string(),
             Variable::Goal => values.goal.to_string(),
@@ -73,9 +73,9 @@ impl Variable {
                     values.value as f64 / values.goal as f64
                 };
                 if percent {
-                    format_percent(ratio, language)
+                    format_percent(ratio, numbers)
                 } else {
-                    format_decimal(ratio, language)
+                    format_decimal(ratio, numbers)
                 }
             }
         }
@@ -92,19 +92,19 @@ enum Segment {
 }
 
 /// Formate un compteur selon un modèle. C'est la seule fonction publique du module.
-pub fn render(template: &str, values: Values, language: Language) -> String {
-    render_segments(&parse(template), values, language)
+pub fn render(template: &str, values: Values, numbers: &NumberFormat) -> String {
+    render_segments(&parse(template), values, numbers)
 }
 
-fn render_segments(segments: &[Segment], values: Values, language: Language) -> String {
+fn render_segments(segments: &[Segment], values: Values, numbers: &NumberFormat) -> String {
     let mut out = String::new();
     for segment in segments {
         match segment {
             Segment::Text(text) => out.push_str(text),
-            Segment::Variable(variable) => out.push_str(&variable.render(values, language)),
+            Segment::Variable(variable) => out.push_str(&variable.render(values, numbers)),
             Segment::Conditional(inner) => {
                 if values.goal > 0 {
-                    out.push_str(&render_segments(inner, values, language));
+                    out.push_str(&render_segments(inner, values, numbers));
                 }
             }
         }
@@ -230,24 +230,20 @@ fn push_segment(segments: &mut Vec<Segment>, segment: Segment) {
     }
 }
 
-/// 0.3 → « 30 % » (français) ou « 30% » (anglais), sans décimale.
-fn format_percent(ratio: f64, language: Language) -> String {
+/// 0.3 → « 30 % » (français) ou « 30% » (anglais), sans décimale : le modèle vient de la
+/// traduction (`number-percent`).
+fn format_percent(ratio: f64, numbers: &NumberFormat) -> String {
     let percent = (ratio * 100.0).round();
-    match language {
-        Language::French => format!("{percent} %"),
-        Language::English => format!("{percent}%"),
-    }
+    numbers.percent.replace("{}", &percent.to_string())
 }
 
 /// 0.3 → « 0,3 » (français) ou « 0.3 » (anglais), au plus 2 décimales, sans zéros inutiles.
-fn format_decimal(ratio: f64, language: Language) -> String {
+fn format_decimal(ratio: f64, numbers: &NumberFormat) -> String {
     // `{:.2}` : 2 décimales. Puis on retire les zéros finaux, et le point s'il reste seul.
     let text = format!("{ratio:.2}");
     let text = text.trim_end_matches('0').trim_end_matches('.');
-    match language {
-        Language::French => text.replace('.', ","),
-        Language::English => text.to_string(),
-    }
+    // Le séparateur décimal vient de la traduction (`number-decimal-separator`).
+    text.replace('.', &numbers.decimal_separator)
 }
 
 #[cfg(test)]
@@ -256,11 +252,19 @@ mod tests {
 
     /// Raccourci pour les tests : format en français.
     fn fr(template: &str, value: u64, goal: u64) -> String {
-        render(template, Values { value, goal }, Language::French)
+        let numbers = NumberFormat {
+            decimal_separator: ",".into(),
+            percent: "{} %".into(),
+        };
+        render(template, Values { value, goal }, &numbers)
     }
 
     fn en(template: &str, value: u64, goal: u64) -> String {
-        render(template, Values { value, goal }, Language::English)
+        let numbers = NumberFormat {
+            decimal_separator: ".".into(),
+            percent: "{}%".into(),
+        };
+        render(template, Values { value, goal }, &numbers)
     }
 
     #[test]

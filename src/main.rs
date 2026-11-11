@@ -31,14 +31,11 @@ use counter::{Counter, CounterAction};
 use display::DisplayStyle;
 use eframe::egui;
 use hotkeys::{Control, HotkeyEvent, HotkeyHandle, Key, MouseMethod, Shortcut};
-use i18n::{Language, Text};
+use i18n::Text;
 use native_window::NativeWindow;
 use storage::SavedState;
 use tracker::{CounterId, Targets, Tracker};
 use winit::event_loop::{DeviceEvents, EventLoop};
-
-/// Langue de l'interface (détectée et réglable à l'étape 10).
-const LANGUAGE: Language = Language::French;
 
 /// Taille des fenêtres compteurs à leur création ; elle s'ajuste au texte dès la première image.
 const INITIAL_COUNTER_SIZE: egui::Vec2 = egui::vec2(200.0, 100.0);
@@ -46,6 +43,7 @@ const INITIAL_COUNTER_SIZE: egui::Vec2 = egui::vec2(200.0, 100.0);
 /// Les onglets de la fenêtre de configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigTab {
+    General,
     Counters,
     Shortcuts,
     Sound,
@@ -126,8 +124,6 @@ struct CounterWindow {
     id: CounterId,
     /// Identifiant egui de la fenêtre (un « viewport » = une fenêtre du système).
     viewport: egui::ViewportId,
-    /// Titre de la fenêtre, UNIQUE dans l'appli : il sert aussi à retrouver la fenêtre système.
-    title: String,
     /// La fenêtre doit-elle être affichée ? (case de la fenêtre principale, sauvegardée)
     visible: bool,
     /// Position choisie à l'ouverture. `None` : pas encore ouverte, ou cachée.
@@ -138,18 +134,26 @@ struct CounterWindow {
 
 impl CounterWindow {
     fn new(id: CounterId, visible: bool) -> Self {
-        let (key, title) = match id {
-            CounterId::Global => ("global", Text::GlobalWindowTitle),
-            CounterId::Round => ("round", Text::RoundWindowTitle),
+        let key = match id {
+            CounterId::Global => "global",
+            CounterId::Round => "round",
         };
         Self {
             id,
             viewport: egui::ViewportId::from_hash_of(key),
-            title: i18n::message(title, LANGUAGE, &[]),
             visible,
             opened_at: None,
             native: None,
         }
+    }
+
+    /// Titre de la fenêtre, UNIQUE dans l'appli : il sert aussi à retrouver la fenêtre système.
+    /// Calculé à chaque fois : il suit la langue choisie, même changée en cours de route.
+    fn title(&self) -> String {
+        i18n::text(match self.id {
+            CounterId::Global => Text::GlobalWindowTitle,
+            CounterId::Round => Text::RoundWindowTitle,
+        })
     }
 
     /// Cache la fenêtre. Elle sera replacée (sans chevauchement) à sa réouverture.
@@ -225,6 +229,10 @@ struct App {
     output_error: Option<String>,
     /// Les sons proposés dans les listes.
     sound_catalog: SoundCatalog,
+    /// La langue choisie (`None` : pas encore choisie, celle du système est utilisée).
+    language: Option<String>,
+    /// Les langues disponibles (intégrées et packs).
+    languages: Vec<i18n::LanguageInfo>,
     /// Import en cours : le compteur et l'emplacement visés, et le résultat attendu de la
     /// fenêtre « Ouvrir ».
     pending_import: Option<(CounterId, audio::SoundSlot, Receiver<Option<PathBuf>>)>,
@@ -282,6 +290,7 @@ impl App {
             mouse_method: self.mouse_method,
             audio_output: self.audio_output.clone(),
             volume: self.volume,
+            language: self.language.clone(),
         };
         if let Err(error) = storage::save(path, &state) {
             eprintln!("Sauvegarde impossible : {error}");
@@ -304,11 +313,7 @@ impl App {
     fn text_and_color(&self, id: CounterId, now: Instant) -> (String, egui::Color32) {
         let style = self.style(id);
         if id == CounterId::Global && self.tracker.reset_pending(now) {
-            let prompt = i18n::message(
-                Text::ResetPrompt,
-                LANGUAGE,
-                &[("key", &self.confirm_key_name)],
-            );
+            let prompt = i18n::message(Text::ResetPrompt, &[("key", &self.confirm_key_name)]);
             return (prompt, style.alert);
         }
         let counter = self.tracker.counter(id);
@@ -318,7 +323,7 @@ impl App {
                 value: counter.value(),
                 goal: counter.goal(),
             },
-            LANGUAGE,
+            &i18n::number_format(),
         );
         (text, style.text_color(counter.goal_reached()))
     }
@@ -326,7 +331,7 @@ impl App {
     /// La fenêtre principale : la configuration, en deux onglets.
     fn main_window(&mut self, ctx: &egui::Context) {
         let builder = egui::ViewportBuilder::default()
-            .with_title(i18n::text(Text::ConfigWindowTitle, LANGUAGE))
+            .with_title(i18n::text(Text::ConfigWindowTitle))
             .with_inner_size([520.0, 640.0])
             .with_min_inner_size([360.0, 240.0]);
         // `show_viewport_immediate` : affiche une fenêtre supplémentaire, dessinée TOUT DE SUITE
@@ -343,15 +348,16 @@ impl App {
                     // `selectable_value` : un bouton « sélectionné » quand `self.tab` vaut cette
                     // valeur ; un clic met `self.tab` à cette valeur.
                     for (tab, label) in [
+                        (ConfigTab::General, Text::TabGeneral),
                         (ConfigTab::Counters, Text::TabCounters),
                         (ConfigTab::Shortcuts, Text::TabShortcuts),
                         (ConfigTab::Sound, Text::TabSound),
                     ] {
-                        ui.selectable_value(&mut self.tab, tab, i18n::text(label, LANGUAGE));
+                        ui.selectable_value(&mut self.tab, tab, i18n::text(label));
                     }
                     // `right_to_left` : la suite est placée en partant de la droite.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(i18n::text(Text::Quit, LANGUAGE)).clicked() {
+                        if ui.button(i18n::text(Text::Quit)).clicked() {
                             quit(ui.ctx());
                         }
                     });
@@ -360,7 +366,7 @@ impl App {
                 // Barre de défilement si la fenêtre est trop petite pour tout afficher.
                 egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
                     ConfigTab::Counters => {
-                        ui.add(egui::Label::new(i18n::text(Text::MenuHint, LANGUAGE)).wrap());
+                        ui.add(egui::Label::new(i18n::text(Text::MenuHint)).wrap());
                         if let Some(error) = &self.import_error {
                             ui.add(
                                 egui::Label::new(
@@ -375,6 +381,7 @@ impl App {
                             ui.add_space(12.0);
                         }
                     }
+                    ConfigTab::General => self.general_settings(ui),
                     ConfigTab::Sound => self.sound_settings(ui),
                     ConfigTab::Shortcuts => {
                         let request = config_window::shortcuts_editor(
@@ -399,27 +406,63 @@ impl App {
         });
     }
 
+    /// L'onglet Général : pour l'instant, la langue de l'interface (interface à retravailler
+    /// à la fin du projet).
+    fn general_settings(&mut self, ui: &mut egui::Ui) {
+        egui::Grid::new("general_settings")
+            .num_columns(2)
+            .spacing([12.0, 10.0])
+            .show(ui, |ui| {
+                ui.label(i18n::text(Text::LanguageLabel));
+                let current = i18n::current_code();
+                let current_name = self
+                    .languages
+                    .iter()
+                    .find(|l| l.code == current)
+                    .map_or(current.clone(), |l| l.name.clone());
+                let mut chosen = None;
+                egui::ComboBox::from_id_salt("language")
+                    .selected_text(current_name)
+                    .show_ui(ui, |ui| {
+                        for language in &self.languages {
+                            if ui
+                                .selectable_label(language.code == current, &language.name)
+                                .clicked()
+                            {
+                                chosen = Some(language.code.clone());
+                            }
+                        }
+                    });
+                // Changement de langue : immédiat, et sauvegardé.
+                if let Some(code) = chosen {
+                    i18n::set_language(&code);
+                    self.language = Some(code);
+                    // La touche de validation a un nom traduit (« Num Entrée » / « Num Enter »).
+                    self.confirm_key_name = confirm_key_name(&self.shortcuts);
+                    self.save_state();
+                }
+                ui.end_row();
+            });
+    }
+
     /// L'onglet Son : sortie audio et volume général.
     fn sound_settings(&mut self, ui: &mut egui::Ui) {
         if self.audio.is_none() {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                i18n::text(Text::NoAudio, LANGUAGE),
-            );
+            ui.colored_label(ui.visuals().warn_fg_color, i18n::text(Text::NoAudio));
             ui.add_space(8.0);
         }
         egui::Grid::new("sound_settings")
             .num_columns(2)
             .spacing([12.0, 10.0])
             .show(ui, |ui| {
-                ui.label(i18n::text(Text::AudioOutput, LANGUAGE));
-                let default_label = i18n::text(Text::DefaultOutput, LANGUAGE);
+                ui.label(i18n::text(Text::AudioOutput));
+                let default_label = i18n::text(Text::DefaultOutput);
                 // Le nom de la sortie choisie ; « introuvable » si elle n'est plus branchée.
                 let current = match &self.audio_output {
                     None => default_label.clone(),
                     Some(id) => match self.audio_outputs.iter().find(|o| &o.id == id) {
                         Some(output) => output.name.clone(),
-                        None => i18n::text(Text::OutputMissing, LANGUAGE),
+                        None => i18n::text(Text::OutputMissing),
                     },
                 };
                 let mut chosen = None;
@@ -474,7 +517,7 @@ impl App {
                     ui.end_row();
                 }
 
-                ui.label(i18n::text(Text::Volume, LANGUAGE));
+                ui.label(i18n::text(Text::Volume));
                 // Le curseur travaille en pourcents (0 à 100), le moteur en 0.0 à 1.0.
                 let mut percent = (self.volume * 100.0).round();
                 let response = ui.add(
@@ -517,8 +560,8 @@ impl App {
                     self.import_error = None;
                     let receiver = file_dialog::pick_sound_file(
                         ctx,
-                        i18n::text(Text::ImportTitle, LANGUAGE),
-                        i18n::text(Text::SoundFiles, LANGUAGE),
+                        i18n::text(Text::ImportTitle),
+                        i18n::text(Text::SoundFiles),
                     );
                     self.pending_import = Some((id, slot, receiver));
                 }
@@ -559,7 +602,7 @@ impl App {
                     audio::ImportError::Unreadable => Text::ImportUnreadable,
                     audio::ImportError::CopyFailed => Text::ImportCopyFailed,
                 };
-                self.import_error = Some(i18n::message(text, LANGUAGE, &[("name", &file_name)]));
+                self.import_error = Some(i18n::message(text, &[("name", &file_name)]));
             }
         }
     }
@@ -585,11 +628,7 @@ impl App {
                 .iter()
                 .find(|o| Some(&o.id) == output.as_ref())
                 .map_or_else(String::new, |o| o.name.clone());
-            self.output_error = Some(i18n::message(
-                Text::OutputRefused,
-                LANGUAGE,
-                &[("name", &name)],
-            ));
+            self.output_error = Some(i18n::message(Text::OutputRefused, &[("name", &name)]));
             // Retour à la sortie précédente.
             if let Some(audio) = &mut self.audio {
                 audio.set_output(previous.clone());
@@ -635,11 +674,7 @@ impl App {
             .iter()
             .find(|o| o.id == opened)
             .map_or(opened.clone(), |o| o.name.clone());
-        Some(i18n::message(
-            Text::OutputUnavailable,
-            LANGUAGE,
-            &[("name", &name)],
-        ))
+        Some(i18n::message(Text::OutputUnavailable, &[("name", &name)]))
     }
 
     /// La section de configuration d'un compteur. Renvoie `true` si un réglage a changé.
@@ -647,18 +682,15 @@ impl App {
         let mut changed = false;
         let window = &mut self.windows[index];
         let id = window.id;
-        ui.heading(i18n::text(
-            match id {
-                CounterId::Global => Text::GlobalCounter,
-                CounterId::Round => Text::RoundCounter,
-            },
-            LANGUAGE,
-        ));
+        ui.heading(i18n::text(match id {
+            CounterId::Global => Text::GlobalCounter,
+            CounterId::Round => Text::RoundCounter,
+        }));
 
         let mut visible = window.visible;
         // `checkbox` modifie `visible` quand on clique ; `.changed()` le signale.
         if ui
-            .checkbox(&mut visible, i18n::text(Text::ShowWindow, LANGUAGE))
+            .checkbox(&mut visible, i18n::text(Text::ShowWindow))
             .changed()
         {
             if visible {
@@ -672,7 +704,7 @@ impl App {
         // L'objectif est dans le compteur : on en modifie une copie, puis on la renvoie.
         let mut goal = self.tracker.counter(id).goal();
         ui.horizontal(|ui| {
-            ui.label(i18n::text(Text::Goal, LANGUAGE));
+            ui.label(i18n::text(Text::Goal));
             if ui.add(egui::DragValue::new(&mut goal)).changed() {
                 self.tracker.set_goal(id, goal);
                 changed = true;
@@ -712,7 +744,7 @@ impl App {
                 changed |= ui
                     .checkbox(
                         &mut self.round_copies_global,
-                        i18n::text(Text::RoundCopiesGlobal, LANGUAGE),
+                        i18n::text(Text::RoundCopiesGlobal),
                     )
                     .changed();
                 // Copie activée : les réglages propres de la partie restent visibles, mais grisés
@@ -791,7 +823,7 @@ impl App {
         match config_window::apply_capture(&mut self.shortcuts, target, held, trigger) {
             Ok(()) => self.shortcuts_changed(),
             Err(CaptureRefused::MainClickNeedsModifier) => {
-                self.capture_error = Some(i18n::text(Text::MainClickNeedsModifier, LANGUAGE));
+                self.capture_error = Some(i18n::text(Text::MainClickNeedsModifier));
             }
         }
     }
@@ -866,7 +898,7 @@ impl App {
             egui::WindowLevel::Normal
         };
         let builder = egui::ViewportBuilder::default()
-            .with_title(window.title.clone())
+            .with_title(window.title())
             .with_position(position)
             .with_inner_size(INITIAL_COUNTER_SIZE)
             .with_decorations(false) // pas de bordure ni de barre de titre
@@ -888,7 +920,7 @@ impl App {
         // la fenêtre système retrouvée par son titre (elle existe dès la première image).
         if window.native.is_none() {
             window.native =
-                NativeWindow::find_by_title(&window.title).inspect(|w| w.remove_decorations());
+                NativeWindow::find_by_title(&window.title()).inspect(|w| w.remove_decorations());
         }
 
         // Échap ou fermeture par le système (Alt + F4) : on CACHE la fenêtre (la case de la
@@ -1013,7 +1045,7 @@ impl App {
             counter.right() - MENU_BUTTON_SIZE.x - 4.0,
             counter.top() + 4.0,
         );
-        let title = i18n::text(Text::MenuButtonWindowTitle, LANGUAGE);
+        let title = i18n::text(Text::MenuButtonWindowTitle);
         let builder = egui::ViewportBuilder::default()
             .with_title(title.clone())
             .with_position(position)
@@ -1079,7 +1111,7 @@ impl App {
         };
         let index = menu.index;
         let id = self.windows[index].id;
-        let title = i18n::text(Text::MenuWindowTitle, LANGUAGE);
+        let title = i18n::text(Text::MenuWindowTitle);
         let builder = egui::ViewportBuilder::default()
             .with_title(title.clone())
             .with_position(menu.position)
@@ -1115,25 +1147,22 @@ impl App {
 
             let frame = egui::Frame::window(ui.style()).corner_radius(0);
             egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-                ui.strong(i18n::text(
-                    match id {
-                        CounterId::Global => Text::GlobalCounter,
-                        CounterId::Round => Text::RoundCounter,
-                    },
-                    LANGUAGE,
-                ));
+                ui.strong(i18n::text(match id {
+                    CounterId::Global => Text::GlobalCounter,
+                    CounterId::Round => Text::RoundCounter,
+                }));
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label(i18n::text(Text::Value, LANGUAGE));
+                    ui.label(i18n::text(Text::Value));
                     let field = ui.add(egui::DragValue::new(&mut menu.value));
                     // Entrée dans le champ, ou le bouton « Valider ».
                     let entered =
                         field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if ui.button(i18n::text(Text::Apply, LANGUAGE)).clicked() || entered {
+                    if ui.button(i18n::text(Text::Apply)).clicked() || entered {
                         action = Some(MenuAction::SetValue(menu.value));
                     }
                 });
-                if ui.button(i18n::text(Text::ResetAction, LANGUAGE)).clicked() {
+                if ui.button(i18n::text(Text::ResetAction)).clicked() {
                     action = Some(MenuAction::Reset);
                 }
                 // Les réglages d'affichage : grisés pour la partie quand elle copie le global.
@@ -1147,7 +1176,7 @@ impl App {
                 .always_on_top;
                 ui.add_enabled_ui(display_editable, |ui| {
                     if ui
-                        .checkbox(&mut on_top, i18n::text(Text::AlwaysOnTop, LANGUAGE))
+                        .checkbox(&mut on_top, i18n::text(Text::AlwaysOnTop))
                         .changed()
                     {
                         action = Some(MenuAction::SetAlwaysOnTop(on_top));
@@ -1155,7 +1184,7 @@ impl App {
                 });
                 ui.separator();
                 // Les raccourcis de ce compteur (lecture seule), pour s'en souvenir en stream.
-                ui.strong(i18n::text(Text::TabShortcuts, LANGUAGE));
+                ui.strong(i18n::text(Text::TabShortcuts));
                 egui::Grid::new("menu_shortcuts")
                     .num_columns(2)
                     .spacing([16.0, 4.0])
@@ -1165,29 +1194,23 @@ impl App {
                         for (kind, shortcuts) in hotkeys::shortcuts_for(&self.shortcuts, id) {
                             for (n, shortcut) in shortcuts.iter().enumerate() {
                                 if n == 0 {
-                                    ui.label(i18n::command_kind_name(kind, LANGUAGE));
+                                    ui.label(i18n::command_kind_name(kind));
                                 } else {
                                     ui.label("");
                                 }
-                                ui.label(i18n::shortcut_name(shortcut, LANGUAGE));
+                                ui.label(i18n::shortcut_name(shortcut));
                                 ui.end_row();
                             }
                         }
                     });
-                if ui
-                    .button(i18n::text(Text::EditShortcuts, LANGUAGE))
-                    .clicked()
-                {
+                if ui.button(i18n::text(Text::EditShortcuts)).clicked() {
                     action = Some(MenuAction::EditShortcuts);
                 }
                 ui.separator();
-                if ui.button(i18n::text(Text::HideWindow, LANGUAGE)).clicked() {
+                if ui.button(i18n::text(Text::HideWindow)).clicked() {
                     action = Some(MenuAction::Hide);
                 }
-                if ui
-                    .button(i18n::text(Text::OpenSettings, LANGUAGE))
-                    .clicked()
-                {
+                if ui.button(i18n::text(Text::OpenSettings)).clicked() {
                     action = Some(MenuAction::OpenSettings);
                 }
             });
@@ -1443,7 +1466,7 @@ fn confirm_key_name(shortcuts: &[Shortcut]) -> String {
     shortcuts
         .iter()
         .find(|s| s.command == Command::ConfirmReset)
-        .map(|s| i18n::shortcut_name(s, LANGUAGE))
+        .map(i18n::shortcut_name)
         .unwrap_or_else(|| "?".into())
 }
 
@@ -1451,6 +1474,14 @@ fn main() -> eframe::Result {
     // On relit la sauvegarde (valeur du global, styles, fenêtres ouvertes, raccourcis).
     let state_path = storage::state_path();
     let saved = state_path.as_deref().map(storage::load).unwrap_or_default();
+
+    // La langue : celle choisie, sinon celle de Windows si elle est disponible, sinon l'anglais.
+    let languages = i18n::available_languages();
+    let language = saved.language.clone().unwrap_or_else(|| {
+        let codes: Vec<String> = languages.iter().map(|l| l.code.clone()).collect();
+        i18n::pick_language(&i18n::system_language(), &codes)
+    });
+    i18n::set_language(&language);
 
     // On écarte les raccourcis non autorisés (clic gauche / droit sans touche de modification),
     // au cas où la sauvegarde aurait été modifiée à la main.
@@ -1460,7 +1491,7 @@ fn main() -> eframe::Result {
     for shortcut in &refused {
         eprintln!(
             "Raccourci ignoré (clic gauche/droit sans Ctrl, Maj ou Alt) : {}",
-            i18n::shortcut_name(shortcut, LANGUAGE)
+            i18n::shortcut_name(shortcut)
         );
     }
     let confirm_key_name = confirm_key_name(&shortcuts);
@@ -1551,6 +1582,8 @@ fn main() -> eframe::Result {
                 default_output: None,
                 output_error: None,
                 sound_catalog: SoundCatalog::load(),
+                language: saved.language.clone(),
+                languages,
                 pending_import: None,
                 import_error: None,
                 tab: ConfigTab::Counters,

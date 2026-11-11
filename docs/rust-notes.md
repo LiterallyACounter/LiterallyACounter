@@ -550,3 +550,50 @@ if lost.load(Ordering::Relaxed) { ... }
 ### Ne pas figer l'interface
 
 La fenêtre « Ouvrir » de Windows ne rend la main qu'une fois fermée : on l'ouvre dans un thread, et le résultat revient par un channel (`try_recv` à chaque image).
+
+## Étape 10 : traductions (Fluent)
+
+### Une variable globale protégée
+
+```rust
+static CURRENT: RwLock<Option<Arc<Translator>>> = RwLock::new(None);
+
+// écrire (rare : changement de langue)
+*CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(Translator::load("en")));
+// lire (à chaque texte affiché)
+let translator = CURRENT.read().unwrap_or_else(|e| e.into_inner()).clone();
+```
+
+- `static` : une variable qui existe pendant tout le programme, visible partout. Rust interdit de la modifier sans protection : plusieurs threads pourraient y accéder en même temps.
+- `RwLock` : « plusieurs lecteurs OU un seul écrivain ». `RwLock::new` est utilisable dans une `static` (fonction `const`).
+- `Arc` : on lit en clonant le pointeur (léger) ; un lecteur garde SA traduction même si la langue change pendant qu'il s'en sert.
+- `unwrap_or_else(|e| e.into_inner())` : un verrou est « empoisonné » si un thread a planté en le tenant ; on récupère quand même la donnée, qui reste valide ici.
+- La bibliothèque doit être utilisable depuis plusieurs threads (`Send + Sync`) pour aller dans une `static` : d'où `fluent_bundle::concurrent::FluentBundle`.
+
+### Des méthodes ET des fonctions libres
+
+Le `Translator` a ses méthodes (`fr().message(...)`), utilisées par les tests avec un traducteur explicite (pas de dépendance à l'état global, donc pas d'interférence entre tests qui tournent en parallèle). Les fonctions libres (`i18n::text(...)`) délèguent à la langue courante, pour l'appli.
+
+### Une chaîne de secours avec `find_map`
+
+```rust
+self.chain.iter().find_map(|bundle| {
+    let pattern = bundle.get_message(id)?.value()?;
+    ...
+})
+```
+
+Le premier élément de la chaîne (pack, langue intégrée, anglais) qui connaît le texte le fournit. `?` dans la closure : « pas trouvé ici, essaie le suivant ».
+
+### Générer plutôt que recopier
+
+Les 96 textes ont été convertis par un script (expressions régulières) : moins d'erreurs qu'une copie à la main, et un test vérifie qu'aucun texte ne manque dans chaque langue (`Text::ALL`).
+
+### Pièges de Fluent
+
+- Fluent entoure les emplacements de caractères invisibles (pour l'écriture de droite à gauche) : `bundle.set_use_isolating(false)`.
+- Une accolade littérale s'écrit `{"{"}` : sinon `{value}` serait pris pour un emplacement.
+
+### Paramètre « tableau » de caractères
+
+`system.split(['-', '_'])` : couper sur l'un OU l'autre caractère.

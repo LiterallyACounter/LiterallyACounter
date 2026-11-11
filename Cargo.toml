@@ -28,6 +28,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Dossier de configuration standard du système (%APPDATA% sous Windows, ~/.config sous Linux…).
 dirs = "7.0.0"
+# Traductions (étape 10) : la bibliothèque officielle du format Fluent (Mozilla), et les
+# identifiants de langue qu'elle utilise. Mesuré : +0,23 Mo, < 1 µs par texte.
+fluent-bundle = "0.16.0"
+unic-langid = "0.9.6"
 
 # Dépendances utilisées uniquement quand on compile pour Windows.
 [target.'cfg(windows)'.dependencies]
@@ -35,6 +39,7 @@ dirs = "7.0.0"
 # Chaque « feature » active une partie de l'API ; on n'active que ce qui sert.
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Globalization",                # langue de l'interface de Windows
     "Win32_UI_WindowsAndMessaging",       # hook clavier
     "Win32_UI_Input_KeyboardAndMouse",    # état des touches
     "Win32_UI_Input",                     # souris par Raw Input (boutons, molette)
