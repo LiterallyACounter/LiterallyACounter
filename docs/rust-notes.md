@@ -503,3 +503,50 @@ Un fichier « UTF-8 avec BOM » commence par le caractère invisible `'\u{feff}'
 ### Tester sans gêner le jeu
 
 Les tests manuels pilotés par script vérifient, juste avant chaque clic ou touche simulés, que la fenêtre au premier plan appartient bien au compteur. Sinon, ils s'arrêtent : un clic simulé pourrait partir dans le jeu.
+
+## Étape 9 : polices, sortie audio, sons
+
+### Lire le registre de Windows (9a)
+
+`RegOpenKeyExW` puis `RegEnumValueW` en boucle (`for index in 0..` + `break`), avec des tampons UTF-16 de taille fixe. `String::from_utf16_lossy` convertit le texte de Windows en `String` Rust.
+
+### Charger à la demande, sans tout garder
+
+- `Option::get_or_insert_with(list_system_fonts)` : calcule la liste au premier besoin, puis la garde.
+- `VecDeque` : une file (on ajoute à la fin, on retire au début) pour oublier les plus vieilles polices d'aperçu au-delà de 8.
+- `flatten()` sur des `Option` : garde les `Some`, écarte les `None` (`[&a, &b].into_iter().flatten()`).
+- Une police donnée à egui n'est active qu'à l'image suivante : on vérifie qu'egui la connaît avant de l'utiliser.
+
+### Partager un booléen entre threads (9b)
+
+```rust
+let lost = Arc::new(AtomicBool::new(false));
+// dans le thread de la bibliothèque audio :
+lost.store(true, Ordering::Relaxed);
+// dans le nôtre :
+if lost.load(Ordering::Relaxed) { ... }
+```
+
+`Arc` : un pointeur partagé (plusieurs propriétaires). `AtomicBool` : un booléen modifiable sans verrou depuis plusieurs threads.
+
+### Mesurer avant de décider
+
+- Demander à Windows sa sortie par défaut coûte ~4 ms : on le fait APRÈS le départ du son, au plus toutes les 2 s, et c'est le son suivant qui change de sortie.
+- Les décodeurs MP3 + OGG pesaient 1,2 Mo (et non 300 à 500 Ko comme estimé) : la mesure a conduit à écarter OGG.
+- Un diagnostic par messages (`eprintln!`) dans la version de développement a montré que Voicemeeter réservait deux sorties : d'où la chaîne de secours (`find_map` sur une liste de sorties candidates).
+
+### Déplacer ou copier ? (9b)
+
+`AudioEngine::new(saved.audio_output, ...)` DÉPLACE la valeur : elle n'est plus utilisable ensuite. Si on en a encore besoin, on passe une copie : `saved.audio_output.clone()`.
+
+### Enums sauvegardés et données intégrées (9c, 9d)
+
+- `#[serde(rename_all = "snake_case")]` sur `SoundChoice` : `{"imported": "coffre.mp3"}` dans le JSON.
+- `include_bytes!("../assets/sounds/pluck_001.wav")` : le fichier est copié DANS l'exe à la compilation (`&'static [u8]`).
+- `std::io::Cursor::new(octets)` : fait passer des octets en mémoire pour un fichier qu'on lit.
+- Une fonction générique avec `where R: Read + Seek + ...` : le même code décode un fichier ou des octets en mémoire.
+- `(2..).map(...).find(...)` : chercher le premier nom libre (« son (2).mp3 », « son (3).mp3 »…).
+
+### Ne pas figer l'interface
+
+La fenêtre « Ouvrir » de Windows ne rend la main qu'une fois fermée : on l'ouvre dans un thread, et le résultat revient par un channel (`try_recv` à chaque image).

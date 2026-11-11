@@ -4,6 +4,8 @@
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
+use crate::audio::SoundSet;
+
 /// De quel côté la fenêtre reste fixe quand le texte change de largeur.
 ///
 /// `#[serde(rename_all = "lowercase")]` : dans le JSON, les variantes s'écrivent
@@ -30,6 +32,8 @@ pub enum Anchor {
 pub struct DisplayStyle {
     /// Modèle de format, par ex. `{value}[ / {goal}]`.
     pub template: String,
+    /// Police installée sur l'ordinateur, par son nom (`None` : police par défaut d'egui).
+    pub font: Option<String>,
     pub font_size: f32,
     /// Couleur de fond. Transparent (`#00000000`) = seul le texte est visible.
     /// La fenêtre est TOUJOURS transparente : c'est nous qui dessinons ce fond (aux coins arrondis).
@@ -52,6 +56,8 @@ pub struct DisplayStyle {
     pub anchor: Anchor,
     /// Fenêtre toujours au premier plan (au-dessus du jeu).
     pub always_on_top: bool,
+    /// Les sons de ce compteur (copiés avec l'affichage, comme le reste du style).
+    pub sounds: SoundSet,
     /// Marge autour du texte, en points.
     pub margin: f32,
 }
@@ -62,6 +68,7 @@ impl Default for DisplayStyle {
     fn default() -> Self {
         Self {
             template: "{value}[ / {goal}]".into(),
+            font: None,
             font_size: 48.0,
             background: Color32::from_rgb(30, 30, 30),
             corner_radius: 8,
@@ -71,6 +78,7 @@ impl Default for DisplayStyle {
             alert: Color32::from_rgb(255, 90, 90),        // rouge
             anchor: Anchor::Center,
             always_on_top: true,
+            sounds: SoundSet::default(),
             margin: 12.0,
         }
     }

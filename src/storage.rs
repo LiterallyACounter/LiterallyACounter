@@ -52,6 +52,10 @@ pub struct SavedState {
     pub shortcuts: Vec<Shortcut>,
     /// Méthode d'écoute de la souris (Raw Input par défaut).
     pub mouse_method: MouseMethod,
+    /// Sortie audio choisie, par son identifiant (`None` : celle par défaut de Windows).
+    pub audio_output: Option<String>,
+    /// Volume général, de 0.0 à 1.0.
+    pub volume: f32,
 }
 
 // Valeurs par défaut écrites à la main : les booléens doivent valoir `true` (le `derive`
@@ -69,6 +73,8 @@ impl Default for SavedState {
             show_round: true,
             shortcuts: hotkeys::default_shortcuts(),
             mouse_method: MouseMethod::RawInput,
+            audio_output: None,
+            volume: 1.0,
         }
     }
 }
@@ -209,6 +215,8 @@ mod tests {
         // Pas de raccourcis dans l'ancien fichier : ceux par défaut.
         assert_eq!(state.shortcuts, hotkeys::default_shortcuts());
         assert_eq!(state.mouse_method, MouseMethod::RawInput);
+        assert_eq!(state.audio_output, None);
+        assert_eq!(state.volume, 1.0);
         let _ = fs::remove_dir_all(&dir);
     }
 

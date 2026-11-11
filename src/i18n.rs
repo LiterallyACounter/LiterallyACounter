@@ -147,6 +147,72 @@ pub enum Text {
     EditShortcuts,
     /// Titre de la mini-fenêtre du bouton « ••• » (jamais visible).
     MenuButtonWindowTitle,
+    /// Choix de la police.
+    Font,
+    /// Police par défaut.
+    DefaultFont,
+    /// Champ de recherche de police.
+    SearchFont,
+    /// Onglet du son.
+    TabSound,
+    /// Choix de la sortie audio.
+    AudioOutput,
+    /// Sortie par défaut de Windows.
+    DefaultOutput,
+    /// Sortie choisie mais débranchée.
+    OutputMissing,
+    /// Volume général.
+    Volume,
+    /// Aucune sortie audio.
+    NoAudio,
+    /// La sortie voulue refuse de s'ouvrir. Emplacement : `{name}` (sortie réellement utilisée).
+    OutputUnavailable,
+    /// Sortie choisie qui refuse de s'ouvrir. Emplacement : `{name}`.
+    OutputRefused,
+    /// Titre de la section des sons.
+    Sounds,
+    /// Emplacement de son : +.
+    SlotIncrement,
+    /// Emplacement de son : −.
+    SlotDecrement,
+    /// Emplacement de son : alerte.
+    SlotResetPrompt,
+    /// Emplacement de son : reset fait.
+    SlotResetDone,
+    /// Emplacement de son : reset annulé.
+    SlotResetUndone,
+    /// Bouton pour écouter un son.
+    Listen,
+    /// Case pour couper un son.
+    Mute,
+    /// Entrée de liste pour importer.
+    ImportFile,
+    /// Titre de groupe.
+    WindowsSounds,
+    /// Titre de groupe.
+    Beeps,
+    /// Titre de groupe.
+    ImportedSounds,
+    /// Bip grave.
+    BeepLow,
+    /// Bip moyen.
+    BeepMid,
+    /// Bip aigu.
+    BeepHigh,
+    /// Bip très aigu.
+    BeepVeryHigh,
+    /// Nom d'un son importé. Emplacement : `{name}`.
+    ImportedSound,
+    /// Titre de la fenêtre Ouvrir.
+    ImportTitle,
+    /// Nom du filtre de fichiers.
+    SoundFiles,
+    /// Import raté : fichier illisible. Emplacement : `{name}`.
+    ImportUnreadable,
+    /// Import raté : copie impossible. Emplacement : `{name}`.
+    ImportCopyFailed,
+    /// Titre de groupe : sons embarqués.
+    EmbeddedSounds,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -307,6 +373,94 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::EditShortcuts, Language::English) => "Edit…",
         (Text::MenuButtonWindowTitle, Language::French) => "Literally A Counter : bouton du menu",
         (Text::MenuButtonWindowTitle, Language::English) => "Literally A Counter: menu button",
+        (Text::Font, Language::French) => "Police",
+        (Text::Font, Language::English) => "Font",
+        (Text::DefaultFont, Language::French) => "Police par défaut",
+        (Text::DefaultFont, Language::English) => "Default font",
+        (Text::SearchFont, Language::French) => "Rechercher…",
+        (Text::SearchFont, Language::English) => "Search…",
+        (Text::TabSound, Language::French) => "Son",
+        (Text::TabSound, Language::English) => "Sound",
+        (Text::AudioOutput, Language::French) => "Sortie audio",
+        (Text::AudioOutput, Language::English) => "Audio output",
+        (Text::DefaultOutput, Language::French) => "Par défaut de Windows",
+        (Text::DefaultOutput, Language::English) => "Windows default",
+        (Text::OutputMissing, Language::French) => {
+            "Sortie introuvable : celle par défaut est utilisée"
+        }
+        (Text::OutputMissing, Language::English) => "Output not found: using the default one",
+        (Text::Volume, Language::French) => "Volume",
+        (Text::Volume, Language::English) => "Volume",
+        (Text::NoAudio, Language::French) => {
+            "Aucune sortie audio disponible : l'appli fonctionne sans son."
+        }
+        (Text::NoAudio, Language::English) => {
+            "No audio output available: the app works without sound."
+        }
+        (Text::OutputUnavailable, Language::French) => {
+            "Cette sortie n'a pas pu être ouverte (elle est peut-être réservée par une autre appli, comme Voicemeeter) : le son passe par « {name} »."
+        }
+        (Text::OutputUnavailable, Language::English) => {
+            "This output could not be opened (another app, such as Voicemeeter, may reserve it): sound goes to \"{name}\"."
+        }
+        (Text::OutputRefused, Language::French) => {
+            "« {name} » n'a pas pu être ouverte (elle est peut-être réservée par une autre appli, comme Voicemeeter) : la sortie précédente est conservée."
+        }
+        (Text::OutputRefused, Language::English) => {
+            "'{name}' could not be opened (another app, such as Voicemeeter, may reserve it): the previous output is kept."
+        }
+        (Text::Sounds, Language::French) => "Sons",
+        (Text::Sounds, Language::English) => "Sounds",
+        (Text::SlotIncrement, Language::French) => "+ (ajout)",
+        (Text::SlotIncrement, Language::English) => "+ (add)",
+        (Text::SlotDecrement, Language::French) => "− (retrait)",
+        (Text::SlotDecrement, Language::English) => "− (remove)",
+        (Text::SlotResetPrompt, Language::French) => "Alerte « Reset ? »",
+        (Text::SlotResetPrompt, Language::English) => "Reset? alert",
+        (Text::SlotResetDone, Language::French) => "Reset fait",
+        (Text::SlotResetDone, Language::English) => "Reset done",
+        (Text::SlotResetUndone, Language::French) => "Reset annulé",
+        (Text::SlotResetUndone, Language::English) => "Reset undone",
+        (Text::Listen, Language::French) => "Écouter",
+        (Text::Listen, Language::English) => "Listen",
+        (Text::Mute, Language::French) => "Muet",
+        (Text::Mute, Language::English) => "Mute",
+        (Text::ImportFile, Language::French) => "Importer un fichier…",
+        (Text::ImportFile, Language::English) => "Import a file…",
+        (Text::WindowsSounds, Language::French) => "Sons de Windows",
+        (Text::WindowsSounds, Language::English) => "Windows sounds",
+        (Text::Beeps, Language::French) => "Bips",
+        (Text::Beeps, Language::English) => "Beeps",
+        (Text::ImportedSounds, Language::French) => "Sons importés",
+        (Text::ImportedSounds, Language::English) => "Imported sounds",
+        (Text::BeepLow, Language::French) => "Bip grave",
+        (Text::BeepLow, Language::English) => "Low beep",
+        (Text::BeepMid, Language::French) => "Bip moyen",
+        (Text::BeepMid, Language::English) => "Medium beep",
+        (Text::BeepHigh, Language::French) => "Bip aigu",
+        (Text::BeepHigh, Language::English) => "High beep",
+        (Text::BeepVeryHigh, Language::French) => "Bip très aigu",
+        (Text::BeepVeryHigh, Language::English) => "Very high beep",
+        (Text::ImportedSound, Language::French) => "{name} (importé)",
+        (Text::ImportedSound, Language::English) => "{name} (imported)",
+        (Text::ImportTitle, Language::French) => "Importer un son",
+        (Text::ImportTitle, Language::English) => "Import a sound",
+        (Text::SoundFiles, Language::French) => "Sons",
+        (Text::SoundFiles, Language::English) => "Sounds",
+        (Text::ImportUnreadable, Language::French) => {
+            "« {name} » n'a pas pu être importé : format non pris en charge ou fichier abîmé (formats acceptés : WAV, MP3)."
+        }
+        (Text::ImportUnreadable, Language::English) => {
+            "'{name}' could not be imported: unsupported format or damaged file (accepted formats: WAV, MP3)."
+        }
+        (Text::ImportCopyFailed, Language::French) => {
+            "« {name} » n'a pas pu être copié dans le dossier des sons."
+        }
+        (Text::ImportCopyFailed, Language::English) => {
+            "'{name}' could not be copied to the sounds folder."
+        }
+        (Text::EmbeddedSounds, Language::French) => "Sons de l'appli (Kenney, CC0)",
+        (Text::EmbeddedSounds, Language::English) => "App sounds (Kenney, CC0)",
     }
 }
 
