@@ -597,3 +597,49 @@ Les 96 textes ont été convertis par un script (expressions régulières) : moi
 ### Paramètre « tableau » de caractères
 
 `system.split(['-', '_'])` : couper sur l'un OU l'autre caractère.
+
+## Étape 11 : optimisation et finitions
+
+### Le profil `release` (11b)
+
+```toml
+[profile.release]
+lto = true          # optimise le programme ENTIER, toutes bibliothèques comprises
+codegen-units = 1   # compile d'un seul bloc : plus lent, mais mieux optimisé
+panic = "abort"     # en cas de plantage, on s'arrête net (pas de code pour « dérouler »)
+opt-level = "s"     # optimiser pour la taille plutôt que pour la vitesse
+```
+
+L'exe passe de 8,8 Mo à 5,4 Mo, sans différence de CPU mesurable. `opt-level = "z"` (encore plus petit en théorie) donnait ici un exe PLUS gros : on mesure, on ne devine pas.
+
+### Où part la mémoire ? (11c)
+
+On compare à un programme de référence (une fenêtre egui vide) : il consomme plus que l'appli entière. La mémoire vient du pilote graphique (OpenGL NVIDIA), pas de nos données. Morale : avant d'optimiser, trouver qui consomme vraiment.
+
+### Sortir une valeur de `self` le temps d'un appel : `std::mem::take` (11d)
+
+```rust
+let mut sections = std::mem::take(&mut self.sections); // self.sections est vide
+let clicked = config_window::section(ui, key, title, open, |ui| {
+    changed |= self.counter_settings(ui, index, &mut sections); // self prêté en entier
+});
+self.sections = sections; // on la remet
+```
+
+Rust interdit de prêter `self` en entier (à la closure) pendant qu'un de ses champs est déjà prêté. `mem::take` remplace le champ par sa valeur « vide » (`Default`) et nous rend l'original : deux emprunts distincts, plus de conflit.
+
+### Une API en deux temps
+
+`section(...)` affiche la section et renvoie seulement « on a cliqué sur le titre » ; c'est l'appelant qui inverse l'état. Ainsi, le contenu de la section peut lui-même modifier la carte des sections (sous-section « Avancé ») sans conflit d'emprunt.
+
+### Compléter une struct : `..defaults.clone()`
+
+```rust
+*style = DisplayStyle { sounds: style.sounds.clone(), ..defaults.clone() };
+```
+
+On donne les champs à garder ; `..` prend tous les autres dans une autre valeur du même type.
+
+### Une valeur ajoutée sans casser les anciennes sauvegardes
+
+`round_copies_global_sounds: Option<bool>` : absent d'une ancienne sauvegarde, il vaut `None`, et on reprend alors `round_copies_global`. `Option` sert ici à distinguer « jamais réglé » de « réglé à faux ».
