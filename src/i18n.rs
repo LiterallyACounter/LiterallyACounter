@@ -211,6 +211,8 @@ pub enum Text {
     ImportUnreadable,
     /// Import raté : copie impossible. Emplacement : `{name}`.
     ImportCopyFailed,
+    /// Titre de groupe : sons embarqués.
+    EmbeddedSounds,
 }
 
 /// Le texte d'un message dans une langue, AVANT remplissage des emplacements.
@@ -457,6 +459,8 @@ pub fn template(text: Text, language: Language) -> &'static str {
         (Text::ImportCopyFailed, Language::English) => {
             "'{name}' could not be copied to the sounds folder."
         }
+        (Text::EmbeddedSounds, Language::French) => "Sons de l'appli (Kenney, CC0)",
+        (Text::EmbeddedSounds, Language::English) => "App sounds (Kenney, CC0)",
     }
 }
 

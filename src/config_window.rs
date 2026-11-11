@@ -187,6 +187,15 @@ pub fn sound_choice_name(choice: &SoundChoice) -> String {
         SoundChoice::Imported(name) => {
             i18n::message(Text::ImportedSound, LANGUAGE, &[("name", &stem(name))])
         }
+        // « pluck_002 » → « pluck 2 » : lisible, sans traduction à maintenir.
+        SoundChoice::Embedded(name) => {
+            let mut words = name.split('_');
+            let base = words.next().unwrap_or_default();
+            match words.next().and_then(|n| n.parse::<u32>().ok()) {
+                Some(number) => format!("{base} {number}"),
+                None => base.to_string(),
+            }
+        }
     }
 }
 
@@ -242,6 +251,11 @@ pub fn sound_editor(
                             }
                             ui.separator();
                         }
+                        ui.label(egui::RichText::new(t(Text::EmbeddedSounds)).weak());
+                        for (name, _) in audio::EMBEDDED {
+                            option(ui, SoundChoice::Embedded(name.to_string()));
+                        }
+                        ui.separator();
                         ui.label(egui::RichText::new(t(Text::Beeps)).weak());
                         for frequency in audio::BEEPS {
                             option(ui, SoundChoice::Beep(frequency));
@@ -565,6 +579,14 @@ pub fn shortcuts_editor(
 mod tests {
     use super::*;
     use crate::counter::CounterAction;
+
+    #[test]
+    fn embedded_sound_names_are_readable() {
+        let name = |n: &str| sound_choice_name(&SoundChoice::Embedded(n.into()));
+        assert_eq!(name("pluck_002"), "pluck 2");
+        assert_eq!(name("confirmation_001"), "confirmation 1");
+        assert_eq!(name("sans_numero"), "sans");
+    }
 
     fn add(kind: CommandKind) -> CaptureTarget {
         CaptureTarget {

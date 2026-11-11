@@ -97,7 +97,44 @@ pub enum SoundChoice {
     Beep(f32),
     /// Un fichier importé, par son nom dans le dossier des sons importés.
     Imported(String),
+    /// Un son embarqué dans l'appli (voir `EMBEDDED`), par son nom.
+    Embedded(String),
 }
+
+/// Les sons embarqués dans l'exe : pack « Interface Sounds » de Kenney (licence CC0, voir
+/// `CREDITS.md`), convertis en WAV. `include_bytes!` copie le contenu du fichier DANS le
+/// programme au moment de la compilation : aucun fichier à livrer à côté de l'exe.
+/// `&[u8]` : une suite d'octets ; `'static` (implicite ici) : elle existe pendant tout le programme.
+pub const EMBEDDED: [(&str, &[u8]); 10] = [
+    (
+        "confirmation_001",
+        include_bytes!("../assets/sounds/confirmation_001.wav"),
+    ),
+    (
+        "select_001",
+        include_bytes!("../assets/sounds/select_001.wav"),
+    ),
+    (
+        "pluck_001",
+        include_bytes!("../assets/sounds/pluck_001.wav"),
+    ),
+    (
+        "pluck_002",
+        include_bytes!("../assets/sounds/pluck_002.wav"),
+    ),
+    ("tick_001", include_bytes!("../assets/sounds/tick_001.wav")),
+    ("back_001", include_bytes!("../assets/sounds/back_001.wav")),
+    (
+        "question_001",
+        include_bytes!("../assets/sounds/question_001.wav"),
+    ),
+    (
+        "error_004",
+        include_bytes!("../assets/sounds/error_004.wav"),
+    ),
+    ("drop_002", include_bytes!("../assets/sounds/drop_002.wav")),
+    ("open_001", include_bytes!("../assets/sounds/open_001.wav")),
+];
 
 /// Le réglage d'un emplacement : quel son, et s'il est coupé.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -579,13 +616,20 @@ fn load(choice: &SoundChoice) -> Option<SamplesBuffer> {
         SoundChoice::Beep(frequency) => Some(beep(*frequency)),
         SoundChoice::Windows(name) => decode_file(&windows_media_dir().join(name)),
         SoundChoice::Imported(name) => decode_file(&sounds_dir()?.join(name)),
+        SoundChoice::Embedded(name) => {
+            let (_, bytes) = EMBEDDED.iter().find(|(n, _)| n == name)?;
+            // `Cursor` : fait passer des octets en mémoire pour un fichier qu'on lit.
+            decode(Decoder::try_from(std::io::Cursor::new(*bytes)).ok()?)
+        }
     }
 }
 
-/// Décode entièrement un fichier son (WAV, MP3). `None` s'il est illisible ou vide.
-fn decode_file(path: &Path) -> Option<SamplesBuffer> {
-    let file = File::open(path).ok()?;
-    let decoder = Decoder::try_from(file).ok()?;
+/// Lit tous les échantillons d'un décodeur. `None` si le son est vide.
+fn decode<R>(decoder: Decoder<R>) -> Option<SamplesBuffer>
+where
+    // `where` : les conditions sur le type `R` (ce qu'on décode doit pouvoir être lu et parcouru).
+    R: std::io::Read + std::io::Seek + Send + Sync + 'static,
+{
     let channels = decoder.channels();
     let sample_rate = decoder.sample_rate();
     // Un décodeur est un ITÉRATEUR d'échantillons : `collect()` les lit tous d'un coup.
@@ -594,6 +638,12 @@ fn decode_file(path: &Path) -> Option<SamplesBuffer> {
         return None;
     }
     Some(SamplesBuffer::new(channels, sample_rate, samples))
+}
+
+/// Décode entièrement un fichier son (WAV, MP3). `None` s'il est illisible ou vide.
+fn decode_file(path: &Path) -> Option<SamplesBuffer> {
+    let file = File::open(path).ok()?;
+    decode(Decoder::try_from(file).ok()?)
 }
 
 /// Le dossier des sons de Windows : `%SystemRoot%\Media` (en général `C:\Windows\Media`).
@@ -689,6 +739,21 @@ mod tests {
         assert_eq!(samples[0], 0.0);
         assert!(samples[samples.len() - 1].abs() < 1e-6);
         assert!(samples.iter().all(|s| s.abs() <= BEEP_AMPLITUDE));
+    }
+
+    #[test]
+    fn every_embedded_sound_decodes() {
+        for (name, _) in EMBEDDED {
+            assert!(
+                load(&SoundChoice::Embedded(name.to_string())).is_some(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_embedded_sound_gives_nothing() {
+        assert!(load(&SoundChoice::Embedded("n'existe pas".into())).is_none());
     }
 
     #[test]
