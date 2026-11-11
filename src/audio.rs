@@ -2,6 +2,9 @@
 //!
 //! - Les sons sont décodés UNE SEULE FOIS au chargement et gardés en mémoire :
 //!   au moment de l'appui, aucun accès disque (latence minimale, pas de saccade en jeu).
+//! - Chaque compteur a ses propres sons (réglés dans son style), par emplacement.
+//! - Formats : WAV et MP3 (sons de Windows, et fichiers importés copiés dans
+//!   `%APPDATA%\LiterallyACounter\sounds`).
 //! - Chaque « emplacement » (`SoundSlot` : +, −…) a son propre lecteur. Un nouveau son
 //!   COUPE le précédent du même emplacement, pour éviter la cacophonie en cas d'appuis rapides.
 //! - Si un son Windows est introuvable, on le remplace par un bip généré (son de secours).
@@ -10,9 +13,9 @@
 //!   ou une sortie précise. Si elle disparaît, on se rabat sur celle par défaut.
 
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::num::NonZero;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -21,7 +24,10 @@ use rodio::buffer::SamplesBuffer;
 use rodio::cpal::traits::HostTrait;
 use rodio::{Decoder, DeviceSinkBuilder, DeviceTrait, MixerDeviceSink, Player, Source};
 
+use serde::{Deserialize, Serialize};
+
 use crate::counter::CounterAction;
+use crate::tracker::CounterId;
 
 /// Les emplacements de son : à quel type d'action un son est associé.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -69,7 +75,7 @@ impl SoundSlot {
         }
     }
 
-    /// Fréquence du bip de secours, si le son Windows est introuvable.
+    /// Fréquence du bip de secours, si le son choisi est introuvable.
     fn fallback_frequency(self) -> f32 {
         match self {
             SoundSlot::Increment => 880.0,    // La 5 (aigu)
@@ -81,17 +87,169 @@ impl SoundSlot {
     }
 }
 
-/// D'où vient un son.
-#[derive(Debug, Clone, PartialEq)]
+/// D'où vient un son. Sauvegardé dans le style, par ex. `{"windows": "Speech On.wav"}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SoundChoice {
     /// Un fichier du dossier des sons de Windows (`C:\Windows\Media`), par son nom.
     Windows(String),
     /// Un bip généré, à la fréquence donnée (en hertz).
-    #[expect(
-        dead_code,
-        reason = "choix proposé dans la fenêtre de config (étape 8)"
-    )]
     Beep(f32),
+    /// Un fichier importé, par son nom dans le dossier des sons importés.
+    Imported(String),
+}
+
+/// Le réglage d'un emplacement : quel son, et s'il est coupé.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlotSettings {
+    pub sound: SoundChoice,
+    #[serde(default)]
+    pub muted: bool,
+}
+
+/// Les sons d'un compteur, un réglage par emplacement. Fait partie du style d'affichage :
+/// il est donc copié vers la partie quand elle copie le global.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SoundSet {
+    pub increment: SlotSettings,
+    pub decrement: SlotSettings,
+    pub reset_prompt: SlotSettings,
+    pub reset_done: SlotSettings,
+    pub reset_undone: SlotSettings,
+}
+
+impl Default for SoundSet {
+    fn default() -> Self {
+        let slot = |slot: SoundSlot| SlotSettings {
+            sound: slot.default_sound(),
+            muted: false,
+        };
+        Self {
+            increment: slot(SoundSlot::Increment),
+            decrement: slot(SoundSlot::Decrement),
+            reset_prompt: slot(SoundSlot::ResetPrompt),
+            reset_done: slot(SoundSlot::ResetDone),
+            reset_undone: slot(SoundSlot::ResetUndone),
+        }
+    }
+}
+
+impl SoundSet {
+    /// Le réglage d'un emplacement.
+    pub fn get(&self, slot: SoundSlot) -> &SlotSettings {
+        match slot {
+            SoundSlot::Increment => &self.increment,
+            SoundSlot::Decrement => &self.decrement,
+            SoundSlot::ResetPrompt => &self.reset_prompt,
+            SoundSlot::ResetDone => &self.reset_done,
+            SoundSlot::ResetUndone => &self.reset_undone,
+        }
+    }
+
+    /// Le réglage d'un emplacement, modifiable.
+    pub fn get_mut(&mut self, slot: SoundSlot) -> &mut SlotSettings {
+        match slot {
+            SoundSlot::Increment => &mut self.increment,
+            SoundSlot::Decrement => &mut self.decrement,
+            SoundSlot::ResetPrompt => &mut self.reset_prompt,
+            SoundSlot::ResetDone => &mut self.reset_done,
+            SoundSlot::ResetUndone => &mut self.reset_undone,
+        }
+    }
+}
+
+/// Les bips proposés : (fréquence en hertz, nom à traduire).
+pub const BEEPS: [f32; 4] = [330.0, 440.0, 880.0, 1200.0];
+
+/// Les sons de Windows disponibles (fichiers `.wav` de `C:\Windows\Media`), triés.
+pub fn windows_sounds() -> Vec<String> {
+    sound_files(&windows_media_dir(), &["wav"])
+}
+
+/// Les sons importés (fichiers du dossier des sons importés), triés.
+pub fn imported_sounds() -> Vec<String> {
+    match sounds_dir() {
+        Some(dir) => sound_files(&dir, &IMPORT_EXTENSIONS),
+        None => Vec::new(),
+    }
+}
+
+/// Les extensions acceptées à l'import.
+const IMPORT_EXTENSIONS: [&str; 2] = ["wav", "mp3"];
+
+/// Les noms des fichiers d'un dossier dont l'extension est dans `extensions`, triés.
+fn sound_files(dir: &Path, extensions: &[&str]) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        // `flatten` : garde les entrées lisibles (`Ok`), écarte les erreurs.
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| has_extension(name, extensions))
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names
+}
+
+/// Le nom de fichier se termine-t-il par une de ces extensions (sans tenir compte des majuscules) ?
+fn has_extension(name: &str, extensions: &[&str]) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| extensions.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// Le dossier des sons importés : `%APPDATA%\LiterallyACounter\sounds`.
+fn sounds_dir() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("LiterallyACounter").join("sounds"))
+}
+
+/// Pourquoi un import a échoué.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportError {
+    /// Format non pris en charge, ou fichier illisible / abîmé.
+    Unreadable,
+    /// Impossible de copier le fichier dans le dossier des sons.
+    CopyFailed,
+}
+
+/// Importe un fichier son : vérifie qu'il se décode, puis le COPIE dans le dossier des sons
+/// importés (il marche ainsi même si l'original est déplacé). Renvoie le nom de la copie.
+pub fn import_sound(source: &Path) -> Result<String, ImportError> {
+    let name = source
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or(ImportError::Unreadable)?;
+    if !has_extension(&name, &IMPORT_EXTENSIONS) || decode_file(source).is_none() {
+        return Err(ImportError::Unreadable);
+    }
+    let dir = sounds_dir().ok_or(ImportError::CopyFailed)?;
+    fs::create_dir_all(&dir).map_err(|_| ImportError::CopyFailed)?;
+    let name = unique_name(&name, &sound_files(&dir, &IMPORT_EXTENSIONS));
+    fs::copy(source, dir.join(&name)).map_err(|_| ImportError::CopyFailed)?;
+    Ok(name)
+}
+
+/// Un nom qui n'existe pas encore : « son.mp3 », sinon « son (2).mp3 », « son (3).mp3 »…
+fn unique_name(name: &str, existing: &[String]) -> String {
+    let taken = |candidate: &str| existing.iter().any(|e| e.eq_ignore_ascii_case(candidate));
+    if !taken(name) {
+        return name.to_string();
+    }
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    let extension = path
+        .extension()
+        .map_or_else(String::new, |e| format!(".{}", e.to_string_lossy()));
+    // `(2..)` : 2, 3, 4… ; `find` : le premier nom libre.
+    (2..)
+        .map(|n| format!("{stem} ({n}){extension}"))
+        .find(|candidate| !taken(candidate))
+        .unwrap_or_else(|| name.to_string())
 }
 
 /// Le son d'un emplacement : les échantillons déjà décodés, et l'état « muet ».
@@ -231,14 +389,19 @@ pub struct AudioEngine {
     unusable_default: Option<String>,
     /// Volume général, de 0.0 (silence) à 1.0 (volume d'origine du son).
     volume: f32,
-    sounds: HashMap<SoundSlot, SlotSound>,
+    /// Les sons décodés, par compteur et par emplacement.
+    sounds: HashMap<(CounterId, SoundSlot), SlotSound>,
+    /// Les réglages déjà chargés, par compteur (pour ne redécoder que ce qui change).
+    loaded: HashMap<CounterId, SoundSet>,
     /// Le lecteur en cours pour chaque emplacement.
     players: HashMap<SoundSlot, Player>,
+    /// Le lecteur du bouton « Écouter » de la configuration.
+    preview: Option<Player>,
 }
 
 impl AudioEngine {
     /// Ouvre la sortie audio choisie (`None` : celle par défaut ; introuvable : celle par
-    /// défaut aussi), règle le volume et charge les sons par défaut.
+    /// défaut aussi) et règle le volume. Les sons sont chargés ensuite par `sync`.
     /// Renvoie `None` s'il n'y a pas de sortie audio utilisable : l'appli tournera sans son.
     pub fn new(output: Option<String>, volume: f32) -> Option<Self> {
         let lost = Arc::new(AtomicBool::new(false));
@@ -256,23 +419,56 @@ impl AudioEngine {
             unusable_default: None,
             volume: clamp_volume(volume),
             sounds: HashMap::new(),
+            loaded: HashMap::new(),
             players: HashMap::new(),
+            preview: None,
         };
-        for slot in SoundSlot::ALL {
-            engine.set_sound(slot, &slot.default_sound());
+        // Sons par défaut, en attendant les réglages des compteurs (`sync`).
+        for counter in CounterId::ALL {
+            engine.sync(counter, &SoundSet::default());
         }
         Some(engine)
     }
 
-    /// Choisit le son d'un emplacement (décodé immédiatement et gardé en mémoire).
-    pub fn set_sound(&mut self, slot: SoundSlot, choice: &SoundChoice) {
-        let samples = load(choice).unwrap_or_else(|| {
-            eprintln!("Son introuvable ({choice:?}) : bip de secours utilisé.");
-            beep(slot.fallback_frequency())
-        });
-        // On conserve l'état « muet » s'il existait déjà.
-        let muted = self.sounds.get(&slot).is_some_and(|s| s.muted);
-        self.sounds.insert(slot, SlotSound { samples, muted });
+    /// Met à jour les sons d'un compteur selon ses réglages. Seuls les emplacements qui ont
+    /// changé sont redécodés : on peut donc l'appeler à chaque image, c'est presque gratuit.
+    pub fn sync(&mut self, counter: CounterId, set: &SoundSet) {
+        let previous = self.loaded.get(&counter);
+        if previous == Some(set) {
+            return;
+        }
+        for slot in SoundSlot::ALL {
+            let settings = set.get(slot);
+            if previous.map(|p| p.get(slot)) == Some(settings) {
+                continue;
+            }
+            let samples = load(&settings.sound).unwrap_or_else(|| {
+                eprintln!(
+                    "Son introuvable ({:?}) : bip de secours utilisé.",
+                    settings.sound
+                );
+                beep(slot.fallback_frequency())
+            });
+            let sound = SlotSound {
+                samples,
+                muted: settings.muted,
+            };
+            self.sounds.insert((counter, slot), sound);
+        }
+        self.loaded.insert(counter, set.clone());
+    }
+
+    /// Joue un son pour l'écouter (bouton « Écouter » de la configuration), même s'il est muet.
+    pub fn preview(&mut self, choice: &SoundChoice) {
+        let Some(samples) = load(choice) else {
+            return;
+        };
+        self.reopen_if_needed();
+        let player = Player::connect_new(self.device.mixer());
+        player.set_volume(self.volume);
+        player.append(samples);
+        // L'ancien aperçu est détruit, donc arrêté.
+        self.preview = Some(player);
     }
 
     /// Change de sortie audio (`None` : celle par défaut de Windows).
@@ -340,17 +536,6 @@ impl AudioEngine {
         }
     }
 
-    /// Coupe ou réactive le son d'un emplacement.
-    // `#[expect(dead_code)]` : on SAIT que cette fonction n'est pas encore utilisée
-    // (le réglage arrive à l'étape 8). Quand elle le sera, le compilateur nous dira
-    // de retirer cette ligne.
-    #[expect(dead_code, reason = "réglage branché à l'étape 8 (fenêtre de config)")]
-    pub fn set_muted(&mut self, slot: SoundSlot, muted: bool) {
-        if let Some(sound) = self.sounds.get_mut(&slot) {
-            sound.muted = muted;
-        }
-    }
-
     /// Règle le volume général (ramené entre 0.0 et 1.0).
     pub fn set_volume(&mut self, volume: f32) {
         self.volume = clamp_volume(volume);
@@ -361,9 +546,9 @@ impl AudioEngine {
         self.play_samples(SoundSlot::Increment, beep(660.0));
     }
 
-    /// Joue le son d'un emplacement (sauf s'il est muet).
-    pub fn play(&mut self, slot: SoundSlot) {
-        let Some(sound) = self.sounds.get(&slot) else {
+    /// Joue le son d'un emplacement d'un compteur (sauf s'il est muet).
+    pub fn play(&mut self, counter: CounterId, slot: SoundSlot) {
+        let Some(sound) = self.sounds.get(&(counter, slot)) else {
             return;
         };
         if sound.muted {
@@ -392,16 +577,23 @@ impl AudioEngine {
 fn load(choice: &SoundChoice) -> Option<SamplesBuffer> {
     match choice {
         SoundChoice::Beep(frequency) => Some(beep(*frequency)),
-        SoundChoice::Windows(name) => {
-            let file = File::open(windows_media_dir().join(name)).ok()?;
-            let decoder = Decoder::try_from(file).ok()?;
-            let channels = decoder.channels();
-            let sample_rate = decoder.sample_rate();
-            // Un décodeur est un ITÉRATEUR d'échantillons : `collect()` les lit tous d'un coup.
-            let samples: Vec<f32> = decoder.collect();
-            Some(SamplesBuffer::new(channels, sample_rate, samples))
-        }
+        SoundChoice::Windows(name) => decode_file(&windows_media_dir().join(name)),
+        SoundChoice::Imported(name) => decode_file(&sounds_dir()?.join(name)),
     }
+}
+
+/// Décode entièrement un fichier son (WAV, MP3). `None` s'il est illisible ou vide.
+fn decode_file(path: &Path) -> Option<SamplesBuffer> {
+    let file = File::open(path).ok()?;
+    let decoder = Decoder::try_from(file).ok()?;
+    let channels = decoder.channels();
+    let sample_rate = decoder.sample_rate();
+    // Un décodeur est un ITÉRATEUR d'échantillons : `collect()` les lit tous d'un coup.
+    let samples: Vec<f32> = decoder.collect();
+    if samples.is_empty() {
+        return None;
+    }
+    Some(SamplesBuffer::new(channels, sample_rate, samples))
 }
 
 /// Le dossier des sons de Windows : `%SystemRoot%\Media` (en général `C:\Windows\Media`).
@@ -497,6 +689,56 @@ mod tests {
         assert_eq!(samples[0], 0.0);
         assert!(samples[samples.len() - 1].abs() < 1e-6);
         assert!(samples.iter().all(|s| s.abs() <= BEEP_AMPLITUDE));
+    }
+
+    #[test]
+    fn unique_name_adds_a_number() {
+        let existing = vec!["coffre.mp3".to_string(), "coffre (2).mp3".to_string()];
+        assert_eq!(unique_name("bip.ogg", &existing), "bip.ogg");
+        assert_eq!(unique_name("coffre.mp3", &existing), "coffre (3).mp3");
+        // Windows ne distingue pas les majuscules dans les noms de fichiers.
+        assert_eq!(unique_name("COFFRE.mp3", &existing), "COFFRE (3).mp3");
+    }
+
+    #[test]
+    fn only_sound_extensions_are_accepted() {
+        assert!(has_extension("son.MP3", &IMPORT_EXTENSIONS));
+        assert!(has_extension("son.wav", &IMPORT_EXTENSIONS));
+        assert!(!has_extension("son.ogg", &IMPORT_EXTENSIONS)); // OGG non pris en charge
+        assert!(!has_extension("image.png", &IMPORT_EXTENSIONS));
+        assert!(!has_extension("sans_extension", &IMPORT_EXTENSIONS));
+    }
+
+    #[test]
+    fn sound_set_saves_and_reloads() {
+        let set = SoundSet {
+            decrement: SlotSettings {
+                sound: SoundChoice::Imported("coffre.mp3".into()),
+                muted: true,
+            },
+            ..SoundSet::default()
+        };
+        let json = serde_json::to_string(&set).unwrap();
+        assert!(json.contains("\"imported\":\"coffre.mp3\""));
+        let back: SoundSet = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, set);
+        // Un réglage absent prend sa valeur par défaut.
+        let partial: SoundSet = serde_json::from_str("{}").unwrap();
+        assert_eq!(partial, SoundSet::default());
+    }
+
+    #[test]
+    fn unreadable_file_cannot_be_imported() {
+        let path = std::env::temp_dir().join(format!("lac-faux-{}.mp3", std::process::id()));
+        fs::write(&path, b"ceci n'est pas un mp3").unwrap();
+        assert_eq!(import_sound(&path), Err(ImportError::Unreadable));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_sounds_are_listed() {
+        assert!(windows_sounds().iter().any(|name| name == "Speech On.wav"));
     }
 
     #[test]

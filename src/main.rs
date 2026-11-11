@@ -9,6 +9,7 @@ mod command;
 mod config_window;
 mod counter;
 mod display;
+mod file_dialog;
 mod fonts;
 mod format;
 mod hotkeys;
@@ -25,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use audio::AudioEngine;
 use command::Command;
-use config_window::{CaptureRefused, CaptureTarget, ShortcutRequest};
+use config_window::{CaptureRefused, CaptureTarget, ShortcutRequest, SoundCatalog, SoundRequest};
 use counter::{Counter, CounterAction};
 use display::DisplayStyle;
 use eframe::egui;
@@ -222,6 +223,13 @@ struct App {
     default_output: Option<(Instant, Option<String>)>,
     /// Message après le choix d'une sortie qui a refusé de s'ouvrir.
     output_error: Option<String>,
+    /// Les sons proposés dans les listes.
+    sound_catalog: SoundCatalog,
+    /// Import en cours : le compteur et l'emplacement visés, et le résultat attendu de la
+    /// fenêtre « Ouvrir ».
+    pending_import: Option<(CounterId, audio::SoundSlot, Receiver<Option<PathBuf>>)>,
+    /// Message après un import raté.
+    import_error: Option<String>,
     /// Fichier de sauvegarde (`None` si le système n'a pas de dossier de configuration).
     state_path: Option<PathBuf>,
 }
@@ -234,10 +242,10 @@ impl App {
         // demande : jouer un son, sauvegarder, prévoir un redessin.
         let outcome = self.tracker.handle(command, now);
         // `if let A && let B` : les deux motifs doivent correspondre (un son ET un moteur audio).
-        if let Some(slot) = outcome.sound
+        if let Some((counter, slot)) = outcome.sound
             && let Some(audio) = &mut self.audio
         {
-            audio.play(slot);
+            audio.play(counter, slot);
         }
         if outcome.save {
             self.save_state();
@@ -353,6 +361,14 @@ impl App {
                 egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
                     ConfigTab::Counters => {
                         ui.add(egui::Label::new(i18n::text(Text::MenuHint, LANGUAGE)).wrap());
+                        if let Some(error) = &self.import_error {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(error).color(ui.visuals().warn_fg_color),
+                                )
+                                .wrap(),
+                            );
+                        }
                         ui.add_space(8.0);
                         for index in 0..self.windows.len() {
                             self.unsaved_changes |= self.counter_settings(ui, index);
@@ -487,6 +503,67 @@ impl App {
             });
     }
 
+    /// Exécute une demande de la section Sons d'un compteur.
+    fn on_sound_request(&mut self, ctx: &egui::Context, id: CounterId, request: SoundRequest) {
+        match request {
+            SoundRequest::Preview(choice) => {
+                if let Some(audio) = &mut self.audio {
+                    audio.preview(&choice);
+                }
+            }
+            SoundRequest::Import(slot) => {
+                // Une seule fenêtre « Ouvrir » à la fois.
+                if self.pending_import.is_none() {
+                    self.import_error = None;
+                    let receiver = file_dialog::pick_sound_file(
+                        ctx,
+                        i18n::text(Text::ImportTitle, LANGUAGE),
+                        i18n::text(Text::SoundFiles, LANGUAGE),
+                    );
+                    self.pending_import = Some((id, slot, receiver));
+                }
+            }
+        }
+    }
+
+    /// La fenêtre « Ouvrir » a-t-elle répondu ? Si un fichier a été choisi, on l'importe et on
+    /// le met sur l'emplacement visé.
+    fn poll_import(&mut self) {
+        let Some((id, slot, receiver)) = &self.pending_import else {
+            return;
+        };
+        // `try_recv` : pas encore de réponse → on réessaiera à l'image suivante.
+        let Ok(picked) = receiver.try_recv() else {
+            return;
+        };
+        let (id, slot) = (*id, *slot);
+        self.pending_import = None;
+        let Some(path) = picked else {
+            return; // annulé
+        };
+        let file_name = path
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        match audio::import_sound(&path) {
+            Ok(name) => {
+                let style = match id {
+                    CounterId::Global => &mut self.global_style,
+                    CounterId::Round => &mut self.round_style,
+                };
+                style.sounds.get_mut(slot).sound = audio::SoundChoice::Imported(name);
+                self.sound_catalog = SoundCatalog::load();
+                self.save_state();
+            }
+            Err(error) => {
+                let text = match error {
+                    audio::ImportError::Unreadable => Text::ImportUnreadable,
+                    audio::ImportError::CopyFailed => Text::ImportCopyFailed,
+                };
+                self.import_error = Some(i18n::message(text, LANGUAGE, &[("name", &file_name)]));
+            }
+        }
+    }
+
     /// Choisit une sortie audio (`None` : celle par défaut de Windows). Si une sortie précise
     /// refuse de s'ouvrir (réservée par une autre appli…), on revient à la sortie précédente et
     /// on le signale en nommant la sortie refusée.
@@ -618,6 +695,17 @@ impl App {
                     &mut self.fonts,
                     &in_use,
                 );
+                ui.add_space(6.0);
+                let (sounds_changed, request) = config_window::sound_editor(
+                    ui,
+                    "global_sounds",
+                    &mut self.global_style.sounds,
+                    &self.sound_catalog,
+                );
+                changed |= sounds_changed;
+                if let Some(request) = request {
+                    self.on_sound_request(ui.ctx(), id, request);
+                }
             }
             CounterId::Round => {
                 // `|=` : « ou » cumulatif (`changed` reste vrai s'il l'était déjà).
@@ -638,6 +726,17 @@ impl App {
                         &mut self.fonts,
                         &in_use,
                     );
+                    ui.add_space(6.0);
+                    let (sounds_changed, request) = config_window::sound_editor(
+                        ui,
+                        "round_sounds",
+                        &mut self.round_style.sounds,
+                        &self.sound_catalog,
+                    );
+                    changed |= sounds_changed;
+                    if let Some(request) = request {
+                        self.on_sound_request(ui.ctx(), id, request);
+                    }
                 });
             }
         }
@@ -1295,6 +1394,22 @@ impl eframe::App for App {
         // On traite tous les événements reçus depuis la dernière image.
         // `try_recv` ne bloque pas : il renvoie `Ok(événement)` s'il y en a un, une erreur sinon.
         // `while let` : boucle tant que le motif correspond (ici, tant qu'il y a des événements).
+        // Les sons des compteurs : rechargés seulement s'ils ont changé (presque gratuit sinon).
+        if let Some(audio) = &mut self.audio {
+            for id in CounterId::ALL {
+                let sounds = effective_style(
+                    id,
+                    &self.global_style,
+                    &self.round_style,
+                    self.round_copies_global,
+                )
+                .sounds
+                .clone();
+                audio.sync(id, &sounds);
+            }
+        }
+        self.poll_import();
+
         // Les polices choisies pour les compteurs : chargées si besoin (sans effet si déjà fait).
         for font in [&self.global_style.font, &self.round_style.font]
             .into_iter()
@@ -1435,6 +1550,9 @@ fn main() -> eframe::Result {
                 audio_outputs: audio::list_outputs(),
                 default_output: None,
                 output_error: None,
+                sound_catalog: SoundCatalog::load(),
+                pending_import: None,
+                import_error: None,
                 tab: ConfigTab::Counters,
                 unsaved_changes: false,
                 state_path,

@@ -4,6 +4,8 @@
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
+use crate::audio::SoundSet;
+
 /// De quel côté la fenêtre reste fixe quand le texte change de largeur.
 ///
 /// `#[serde(rename_all = "lowercase")]` : dans le JSON, les variantes s'écrivent
@@ -54,6 +56,8 @@ pub struct DisplayStyle {
     pub anchor: Anchor,
     /// Fenêtre toujours au premier plan (au-dessus du jeu).
     pub always_on_top: bool,
+    /// Les sons de ce compteur (copiés avec l'affichage, comme le reste du style).
+    pub sounds: SoundSet,
     /// Marge autour du texte, en points.
     pub margin: f32,
 }
@@ -74,6 +78,7 @@ impl Default for DisplayStyle {
             alert: Color32::from_rgb(255, 90, 90),        // rouge
             anchor: Anchor::Center,
             always_on_top: true,
+            sounds: SoundSet::default(),
             margin: 12.0,
         }
     }

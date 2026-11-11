@@ -17,8 +17,9 @@ winit = { version = "0.30.13", default-features = false }
 # Audio. On désactive tout par défaut et on n'active que :
 # - "playback" : la lecture sur un périphérique audio (via cpal) ;
 # - "hound" : un décodeur WAV léger (les sons Windows sont en WAV).
-# Les autres formats (MP3, OGG) seront ajoutés à l'étape 8 avec l'import de sons.
-rodio = { version = "0.23.0", default-features = false, features = ["playback", "hound"] }
+# - "mp3" : sons importés en MP3 (étape 9c), via le décodeur de symphonia (+0,42 Mo).
+#   (OGG écarté : +0,8 Mo de plus pour un format peu courant.)
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "hound", "mp3"] }
 # Accès à l'identifiant système de la fenêtre (déjà utilisé par eframe : aucun poids en plus).
 raw-window-handle = "0.6.2"
 # Sauvegarde : `serde` transforme nos structs en données (et inversement), grâce à
@@ -38,6 +39,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",    # état des touches
     "Win32_UI_Input",                     # souris par Raw Input (boutons, molette)
     "Win32_Graphics_Gdi",                 # fenêtre invisible qui reçoit Raw Input
+    "Win32_UI_Controls_Dialogs",          # fenêtre « Ouvrir » (import de sons)
     "Win32_System_LibraryLoader",         # hook clavier
     "Win32_System_Registry",              # liste des polices installées
     "Win32_System_Threading",             # identifiant du thread du hook (pour le réveiller)

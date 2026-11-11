@@ -69,8 +69,9 @@ impl Targets {
 /// `#[derive(Default)]` : par défaut, rien à faire (`None`, `false`, `false`).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
-    /// Son à jouer (un seul, même si la commande a touché les deux compteurs).
-    pub sound: Option<SoundSlot>,
+    /// Son à jouer, et le compteur dont on prend le son (un seul son, même si la commande a
+    /// touché les deux compteurs : c'est alors celui de la partie).
+    pub sound: Option<(CounterId, SoundSlot)>,
     /// La valeur du global a changé : il faut sauvegarder.
     pub save: bool,
     /// Une demande « Reset ? » vient de commencer : il faudra redessiner à son expiration.
@@ -143,7 +144,7 @@ impl Tracker {
             Command::Reset(CounterId::Round) => {
                 self.reset(CounterId::Round);
                 Outcome {
-                    sound: Some(SoundSlot::ResetDone),
+                    sound: Some((CounterId::Round, SoundSlot::ResetDone)),
                     ..Outcome::default()
                 }
             }
@@ -151,7 +152,7 @@ impl Tracker {
             Command::Reset(CounterId::Global) => {
                 self.reset_confirmation.request(now);
                 Outcome {
-                    sound: Some(SoundSlot::ResetPrompt),
+                    sound: Some((CounterId::Global, SoundSlot::ResetPrompt)),
                     reset_prompt_started: true,
                     ..Outcome::default()
                 }
@@ -163,7 +164,7 @@ impl Tracker {
                 }
                 self.reset(CounterId::Global);
                 Outcome {
-                    sound: Some(SoundSlot::ResetDone),
+                    sound: Some((CounterId::Global, SoundSlot::ResetDone)),
                     save: true,
                     ..Outcome::default()
                 }
@@ -184,8 +185,14 @@ impl Tracker {
         if self.last_reset.is_some_and(|id| targets.contains(id)) {
             self.last_reset = None;
         }
+        // Un seul son : celui de la partie si elle est touchée (décision de l'étape 9).
+        let sound_counter = if targets.round {
+            CounterId::Round
+        } else {
+            CounterId::Global
+        };
         Outcome {
-            sound: Some(SoundSlot::for_action(action)),
+            sound: Some((sound_counter, SoundSlot::for_action(action))),
             save: targets.global,
             ..Outcome::default()
         }
@@ -206,7 +213,7 @@ impl Tracker {
             return Outcome::default();
         }
         Outcome {
-            sound: Some(SoundSlot::ResetUndone),
+            sound: Some((id, SoundSlot::ResetUndone)),
             save: id == CounterId::Global,
             ..Outcome::default()
         }
@@ -237,8 +244,26 @@ mod tests {
         let mut t = tracker(14, 0);
         let outcome = t.handle(PLUS_BOTH, Instant::now());
         assert_eq!(values(&t), (15, 1));
-        assert_eq!(outcome.sound, Some(SoundSlot::Increment));
+        // Les deux compteurs comptent : c'est le son de la partie.
+        assert_eq!(
+            outcome.sound,
+            Some((CounterId::Round, SoundSlot::Increment))
+        );
         assert!(outcome.save);
+    }
+
+    #[test]
+    fn counting_only_the_global_plays_the_global_sound() {
+        let mut t = tracker(14, 0);
+        let only_global = Targets::only(CounterId::Global);
+        let outcome = t.handle(
+            Command::Count(only_global, CounterAction::Subtract(1)),
+            Instant::now(),
+        );
+        assert_eq!(
+            outcome.sound,
+            Some((CounterId::Global, SoundSlot::Decrement))
+        );
     }
 
     #[test]
@@ -258,7 +283,10 @@ mod tests {
         let mut t = tracker(14, 3);
         let outcome = t.handle(Command::Reset(CounterId::Round), Instant::now());
         assert_eq!(values(&t), (14, 0));
-        assert_eq!(outcome.sound, Some(SoundSlot::ResetDone));
+        assert_eq!(
+            outcome.sound,
+            Some((CounterId::Round, SoundSlot::ResetDone))
+        );
         assert!(!outcome.save);
     }
 
@@ -310,7 +338,10 @@ mod tests {
         t.handle(Command::Reset(CounterId::Round), Instant::now());
         let outcome = t.handle(Command::UndoReset, Instant::now());
         assert_eq!(values(&t), (14, 3));
-        assert_eq!(outcome.sound, Some(SoundSlot::ResetUndone));
+        assert_eq!(
+            outcome.sound,
+            Some((CounterId::Round, SoundSlot::ResetUndone))
+        );
         assert!(!outcome.save);
     }
 

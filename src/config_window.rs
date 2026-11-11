@@ -9,6 +9,7 @@ use eframe::egui;
 use egui::color_picker::{Alpha, color_edit_button_srgba};
 
 use crate::LANGUAGE;
+use crate::audio::{self, SoundChoice, SoundSet, SoundSlot};
 use crate::command::{Command, CommandKind};
 use crate::display::{Anchor, DisplayStyle};
 use crate::fonts::FontLibrary;
@@ -135,6 +136,134 @@ pub fn style_editor(
             }
         });
     changed
+}
+
+/// Les sons proposés dans les listes (relus au démarrage et après un import).
+pub struct SoundCatalog {
+    pub windows: Vec<String>,
+    pub imported: Vec<String>,
+}
+
+impl SoundCatalog {
+    pub fn load() -> Self {
+        Self {
+            windows: audio::windows_sounds(),
+            imported: audio::imported_sounds(),
+        }
+    }
+}
+
+/// Ce que l'utilisateur a demandé dans la section Sons.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SoundRequest {
+    /// Écouter un son (bouton « Écouter »).
+    Preview(SoundChoice),
+    /// Importer un fichier pour cet emplacement.
+    Import(SoundSlot),
+}
+
+/// Le nom d'un fichier sans son extension (« Speech On.wav » → « Speech On »).
+fn stem(name: &str) -> String {
+    std::path::Path::new(name)
+        .file_stem()
+        .map_or_else(|| name.to_string(), |s| s.to_string_lossy().into_owned())
+}
+
+/// Le nom affiché d'un choix de son.
+pub fn sound_choice_name(choice: &SoundChoice) -> String {
+    match choice {
+        SoundChoice::Windows(name) => stem(name),
+        SoundChoice::Beep(frequency) => {
+            // `position` : le rang de cette fréquence parmi les bips proposés.
+            let index = audio::BEEPS.iter().position(|f| f == frequency);
+            match index {
+                Some(0) => t(Text::BeepLow),
+                Some(1) => t(Text::BeepMid),
+                Some(2) => t(Text::BeepHigh),
+                Some(_) => t(Text::BeepVeryHigh),
+                None => format!("{frequency} Hz"),
+            }
+        }
+        SoundChoice::Imported(name) => {
+            i18n::message(Text::ImportedSound, LANGUAGE, &[("name", &stem(name))])
+        }
+    }
+}
+
+/// Le nom d'un emplacement de son.
+fn slot_name(slot: SoundSlot) -> String {
+    t(match slot {
+        SoundSlot::Increment => Text::SlotIncrement,
+        SoundSlot::Decrement => Text::SlotDecrement,
+        SoundSlot::ResetPrompt => Text::SlotResetPrompt,
+        SoundSlot::ResetDone => Text::SlotResetDone,
+        SoundSlot::ResetUndone => Text::SlotResetUndone,
+    })
+}
+
+/// La section Sons d'un compteur : pour chaque emplacement, le son, « Écouter » et « Muet ».
+/// Renvoie `true` si un réglage a changé, et l'éventuelle demande (écouter, importer).
+pub fn sound_editor(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    sounds: &mut SoundSet,
+    catalog: &SoundCatalog,
+) -> (bool, Option<SoundRequest>) {
+    let mut changed = false;
+    let mut request = None;
+    ui.strong(t(Text::Sounds));
+    egui::Grid::new((id_salt, "sounds"))
+        .num_columns(4)
+        .spacing([10.0, 6.0])
+        .show(ui, |ui| {
+            for slot in SoundSlot::ALL {
+                ui.label(slot_name(slot));
+                let settings = sounds.get_mut(slot);
+                egui::ComboBox::from_id_salt((id_salt, slot))
+                    .selected_text(sound_choice_name(&settings.sound))
+                    .width(170.0)
+                    .height(320.0)
+                    .show_ui(ui, |ui| {
+                        // Un petit utilitaire local : une ligne de la liste, qui choisit ce son.
+                        let mut option = |ui: &mut egui::Ui, choice: SoundChoice| {
+                            let selected = settings.sound == choice;
+                            if ui
+                                .selectable_label(selected, sound_choice_name(&choice))
+                                .clicked()
+                            {
+                                settings.sound = choice;
+                                changed = true;
+                            }
+                        };
+                        if !catalog.imported.is_empty() {
+                            ui.label(egui::RichText::new(t(Text::ImportedSounds)).weak());
+                            for name in &catalog.imported {
+                                option(ui, SoundChoice::Imported(name.clone()));
+                            }
+                            ui.separator();
+                        }
+                        ui.label(egui::RichText::new(t(Text::Beeps)).weak());
+                        for frequency in audio::BEEPS {
+                            option(ui, SoundChoice::Beep(frequency));
+                        }
+                        ui.separator();
+                        ui.label(egui::RichText::new(t(Text::WindowsSounds)).weak());
+                        for name in &catalog.windows {
+                            option(ui, SoundChoice::Windows(name.clone()));
+                        }
+                        ui.separator();
+                        if ui.selectable_label(false, t(Text::ImportFile)).clicked() {
+                            request = Some(SoundRequest::Import(slot));
+                        }
+                    });
+                if ui.button(t(Text::Listen)).clicked() {
+                    request = Some(SoundRequest::Preview(settings.sound.clone()));
+                }
+                changed |= ui.checkbox(&mut settings.muted, t(Text::Mute)).changed();
+                ui.end_row();
+            }
+        });
+    (changed, request)
 }
 
 /// Le choix de la police : une liste déroulante avec recherche, puis un aperçu de la police
