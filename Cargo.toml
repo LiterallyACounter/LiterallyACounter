@@ -51,3 +51,11 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Graphics_Dwm",                 # liseré, coins arrondis, ombre (Windows 11)
     "Win32_UI_Shell",                     # sous-classe de fenêtre (ligne du haut)
 ] }
+
+# Exe final (étape 11b) : mesuré 8,82 Mo → 5,39 Mo, sans écart mesurable de vitesse ni de démarrage.
+[profile.release]
+lto = true          # optimise tout le programme d'un coup (« link-time optimization »)
+codegen-units = 1   # un seul bloc de compilation : optimisations plus poussées
+panic = "abort"     # en cas de plantage, arrêt immédiat de toute l'appli (plutôt qu'un thread
+                    # des raccourcis mort en silence) ; la valeur est sauvegardée à chaque changement
+opt-level = "s"     # privilégie la taille (mesuré : plus petit que "z" ici)
