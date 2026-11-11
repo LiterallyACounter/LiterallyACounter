@@ -39,8 +39,6 @@ const FALLBACK: &str = "en";
 /// Les textes traduisibles. Une variante par message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Text {
-    /// Onglet des réglages généraux.
-    TabGeneral,
     /// Choix de la langue de l'interface.
     LanguageLabel,
     /// Demande de confirmation du reset. Emplacement : `{key}` (touche de validation).
@@ -201,8 +199,6 @@ pub enum Text {
     SlotResetUndone,
     /// Bouton pour écouter un son.
     Listen,
-    /// Case pour couper un son.
-    Mute,
     /// Entrée de liste pour importer.
     ImportFile,
     /// Titre de groupe.
@@ -231,13 +227,58 @@ pub enum Text {
     ImportCopyFailed,
     /// Titre de groupe : sons embarqués.
     EmbeddedSounds,
+    /// Onglet des informations.
+    TabInfo,
+    /// Section repliable : affichage d'un compteur.
+    DisplaySection,
+    /// Section repliable : réglages avancés.
+    AdvancedSection,
+    /// Titre des couleurs du texte.
+    ColorsSection,
+    /// Bouton : rétablir l'affichage par défaut.
+    ResetDisplay,
+    /// Case : la partie utilise les sons du global.
+    RoundUsesGlobalSounds,
+    /// Bulle de l'icône haut-parleur.
+    MuteTooltip,
+    /// Bulle d'aide du format.
+    TooltipFormat,
+    /// Bulle d'aide de l'ancrage.
+    TooltipAnchor,
+    /// Bulle d'aide du premier plan.
+    TooltipAlwaysOnTop,
+    /// Bulle d'aide du fond transparent.
+    TooltipTransparent,
+    /// Bulle d'aide de la copie de l'affichage.
+    TooltipCopyDisplay,
+    /// Bulle d'aide de Raw Input.
+    TooltipRawInput,
+    /// Bulle d'aide de l'interrogation.
+    TooltipPolling,
+    /// Version de l'appli. Emplacement : `{version}`.
+    AppVersion,
+    /// Bouton : ouvrir le dossier de l'appli.
+    OpenAppFolder,
+    /// Bulle du bouton du dossier.
+    OpenAppFolderTooltip,
+    /// Titre du mode d'emploi.
+    GuideTitle,
+    /// Mode d'emploi : compter.
+    GuideCount,
+    /// Mode d'emploi : reset.
+    GuideReset,
+    /// Mode d'emploi : déplacer, cacher.
+    GuideMove,
+    /// Mode d'emploi : stream.
+    GuideStream,
+    /// Crédits.
+    Credits,
 }
 
 impl Text {
     /// L'identifiant du texte dans les fichiers `.ftl` (par ex. `reset-prompt`).
     pub fn id(self) -> &'static str {
         match self {
-            Text::TabGeneral => "tab-general",
             Text::LanguageLabel => "language-label",
             Text::ResetPrompt => "reset-prompt",
             Text::GlobalWindowTitle => "global-window-title",
@@ -318,7 +359,6 @@ impl Text {
             Text::SlotResetDone => "slot-reset-done",
             Text::SlotResetUndone => "slot-reset-undone",
             Text::Listen => "listen",
-            Text::Mute => "mute",
             Text::ImportFile => "import-file",
             Text::WindowsSounds => "windows-sounds",
             Text::Beeps => "beeps",
@@ -333,13 +373,35 @@ impl Text {
             Text::ImportUnreadable => "import-unreadable",
             Text::ImportCopyFailed => "import-copy-failed",
             Text::EmbeddedSounds => "embedded-sounds",
+            Text::TabInfo => "tab-info",
+            Text::DisplaySection => "display-section",
+            Text::AdvancedSection => "advanced-section",
+            Text::ColorsSection => "colors-section",
+            Text::ResetDisplay => "reset-display",
+            Text::RoundUsesGlobalSounds => "round-uses-global-sounds",
+            Text::MuteTooltip => "mute-tooltip",
+            Text::TooltipFormat => "tooltip-format",
+            Text::TooltipAnchor => "tooltip-anchor",
+            Text::TooltipAlwaysOnTop => "tooltip-always-on-top",
+            Text::TooltipTransparent => "tooltip-transparent",
+            Text::TooltipCopyDisplay => "tooltip-copy-display",
+            Text::TooltipRawInput => "tooltip-raw-input",
+            Text::TooltipPolling => "tooltip-polling",
+            Text::AppVersion => "app-version",
+            Text::OpenAppFolder => "open-app-folder",
+            Text::OpenAppFolderTooltip => "open-app-folder-tooltip",
+            Text::GuideTitle => "guide-title",
+            Text::GuideCount => "guide-count",
+            Text::GuideReset => "guide-reset",
+            Text::GuideMove => "guide-move",
+            Text::GuideStream => "guide-stream",
+            Text::Credits => "credits",
         }
     }
 
     /// Tous les textes (pour vérifier qu'aucune traduction intégrée n'en oublie).
     #[cfg(test)]
-    pub const ALL: [Text; 96] = [
-        Text::TabGeneral,
+    pub const ALL: [Text; 117] = [
         Text::LanguageLabel,
         Text::ResetPrompt,
         Text::GlobalWindowTitle,
@@ -420,7 +482,6 @@ impl Text {
         Text::SlotResetDone,
         Text::SlotResetUndone,
         Text::Listen,
-        Text::Mute,
         Text::ImportFile,
         Text::WindowsSounds,
         Text::Beeps,
@@ -435,6 +496,29 @@ impl Text {
         Text::ImportUnreadable,
         Text::ImportCopyFailed,
         Text::EmbeddedSounds,
+        Text::TabInfo,
+        Text::DisplaySection,
+        Text::AdvancedSection,
+        Text::ColorsSection,
+        Text::ResetDisplay,
+        Text::RoundUsesGlobalSounds,
+        Text::MuteTooltip,
+        Text::TooltipFormat,
+        Text::TooltipAnchor,
+        Text::TooltipAlwaysOnTop,
+        Text::TooltipTransparent,
+        Text::TooltipCopyDisplay,
+        Text::TooltipRawInput,
+        Text::TooltipPolling,
+        Text::AppVersion,
+        Text::OpenAppFolder,
+        Text::OpenAppFolderTooltip,
+        Text::GuideTitle,
+        Text::GuideCount,
+        Text::GuideReset,
+        Text::GuideMove,
+        Text::GuideStream,
+        Text::Credits,
     ];
 }
 

@@ -5,6 +5,8 @@
 //! quand l'utilisateur touche à un contrôle. Elle renvoie `true` si quelque chose a changé, pour
 //! que `main.rs` sache qu'il faut sauvegarder.
 
+use std::collections::BTreeMap;
+
 use eframe::egui;
 use egui::color_picker::{Alpha, color_edit_button_srgba};
 
@@ -21,17 +23,49 @@ fn t(text: Text) -> String {
     i18n::text(text)
 }
 
-/// Les réglages d'affichage d'un compteur, présentés en grille (libellé | contrôle).
+/// L'état replié / déplié des sections de la configuration, par nom (sauvegardé).
+/// `BTreeMap` : un dictionnaire (clé → valeur) trié par clé ; trié, il s'écrit toujours dans
+/// le même ordre dans la sauvegarde.
+pub type Sections = BTreeMap<String, bool>;
+
+/// La section `key` est-elle dépliée ? (`default` tant que l'utilisateur n'y a pas touché.)
+pub fn is_open(sections: &Sections, key: &str, default: bool) -> bool {
+    sections.get(key).copied().unwrap_or(default)
+}
+
+/// Une section repliable : un titre cliquable (▸ / ▾) et son contenu, affiché seulement si
+/// `open`. Renvoie `true` si l'utilisateur vient de cliquer sur le titre : c'est à l'appelant
+/// d'inverser l'état (en deux temps, pour que le contenu puisse lui aussi modifier les sections).
+pub fn section(
+    ui: &mut egui::Ui,
+    key: &str,
+    title: impl Into<egui::WidgetText>,
+    open: bool,
+    body: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    // `.open(Some(open))` : c'est NOUS qui décidons de l'état (celui de la sauvegarde).
+    egui::CollapsingHeader::new(title)
+        .id_salt(key)
+        .open(Some(open))
+        .show(ui, body)
+        .header_response
+        .clicked()
+}
+
+/// Les réglages d'affichage d'un compteur : format, police, taille, fond, couleurs du texte,
+/// puis une section « Avancé » repliée (marge, arrondi, ancrage, premier plan).
 /// `id_salt` : un identifiant propre à chaque compteur, car egui doit distinguer
 /// les deux grilles affichées dans la même fenêtre.
 /// `fonts` : les polices (liste et chargement) ; `in_use` : les polices des compteurs,
-/// à garder en mémoire.
+/// à garder en mémoire. `defaults` : l'affichage rétabli par le bouton « Rétablir ».
 pub fn style_editor(
     ui: &mut egui::Ui,
     id_salt: &str,
     style: &mut DisplayStyle,
     fonts: &mut FontLibrary,
     in_use: &[&str],
+    sections: &mut Sections,
+    defaults: &DisplayStyle,
 ) -> bool {
     let mut changed = false;
 
@@ -44,8 +78,12 @@ pub fn style_editor(
         .num_columns(2)
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
-            ui.label(t(Text::Template));
-            changed |= ui.text_edit_singleline(&mut style.template).changed();
+            ui.label(t(Text::Template))
+                .on_hover_text(t(Text::TooltipFormat));
+            changed |= ui
+                .text_edit_singleline(&mut style.template)
+                .on_hover_text(t(Text::TooltipFormat))
+                .changed();
             ui.end_row();
 
             ui.label(t(Text::Font));
@@ -66,51 +104,19 @@ pub fn style_editor(
                 .changed();
             ui.end_row();
 
-            ui.label(t(Text::Margin));
-            changed |= ui
-                .add(egui::DragValue::new(&mut style.margin).range(0.0..=100.0))
-                .changed();
-            ui.end_row();
-
-            ui.label(t(Text::CornerRadius));
-            changed |= ui
-                .add(egui::DragValue::new(&mut style.corner_radius).range(0..=100))
-                .changed();
-            ui.end_row();
-
-            ui.label(t(Text::Anchor));
-            ui.horizontal(|ui| {
-                // `radio_value` : un bouton radio qui met `style.anchor` à la valeur donnée.
-                for (anchor, label) in [
-                    (Anchor::Left, Text::AnchorLeft),
-                    (Anchor::Center, Text::AnchorCenter),
-                    (Anchor::Right, Text::AnchorRight),
-                ] {
-                    changed |= ui
-                        .radio_value(&mut style.anchor, anchor, t(label))
-                        .changed();
-                }
-            });
-            ui.end_row();
-
-            ui.label("");
-            changed |= ui
-                .checkbox(&mut style.always_on_top, t(Text::AlwaysOnTop))
-                .changed();
-            ui.end_row();
-
             ui.label(t(Text::Background));
             ui.horizontal(|ui| {
                 // Fond transparent : opacité à 0. Le décocher remet le fond par défaut.
                 let mut transparent = style.background.a() == 0;
                 if ui
                     .checkbox(&mut transparent, t(Text::TransparentBackground))
+                    .on_hover_text(t(Text::TooltipTransparent))
                     .changed()
                 {
                     style.background = if transparent {
                         egui::Color32::TRANSPARENT
                     } else {
-                        DisplayStyle::default().background
+                        defaults.background
                     };
                     changed = true;
                 }
@@ -121,20 +127,166 @@ pub fn style_editor(
                 }
             });
             ui.end_row();
+        });
 
-            // Les couleurs du texte, toujours opaques.
-            for (label, color) in [
-                (Text::PlainTextColor, &mut style.text),
-                (Text::GoalPendingColor, &mut style.goal_pending),
-                (Text::GoalReachedColor, &mut style.goal_reached),
-                (Text::AlertColor, &mut style.alert),
-            ] {
-                ui.label(t(label));
-                changed |= color_edit_button_srgba(ui, color, Alpha::Opaque).changed();
+    // Les couleurs du texte, toujours opaques, en grille 2 × 2 : libellé puis pastille.
+    ui.label(t(Text::ColorsSection));
+    egui::Grid::new((id_salt, "colors"))
+        .num_columns(4)
+        .spacing([10.0, 6.0])
+        .show(ui, |ui| {
+            let pairs = [
+                [
+                    (Text::PlainTextColor, &mut style.text),
+                    (Text::AlertColor, &mut style.alert),
+                ],
+                [
+                    (Text::GoalPendingColor, &mut style.goal_pending),
+                    (Text::GoalReachedColor, &mut style.goal_reached),
+                ],
+            ];
+            for row in pairs {
+                for (label, color) in row {
+                    ui.label(t(label));
+                    changed |= color_edit_button_srgba(ui, color, Alpha::Opaque).changed();
+                }
                 ui.end_row();
             }
         });
+
+    // Les réglages rarement modifiés, dans une section repliée par défaut.
+    let advanced_key = format!("{id_salt}_advanced");
+    let advanced_open = is_open(sections, &advanced_key, false);
+    let clicked = section(
+        ui,
+        &advanced_key,
+        t(Text::AdvancedSection),
+        advanced_open,
+        |ui| {
+            egui::Grid::new((id_salt, "advanced"))
+                .num_columns(2)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label(t(Text::Margin));
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut style.margin).range(0.0..=100.0))
+                        .changed();
+                    ui.end_row();
+
+                    ui.label(t(Text::CornerRadius));
+                    changed |= ui
+                        .add(egui::DragValue::new(&mut style.corner_radius).range(0..=100))
+                        .changed();
+                    ui.end_row();
+
+                    ui.label(t(Text::Anchor))
+                        .on_hover_text(t(Text::TooltipAnchor));
+                    ui.horizontal_wrapped(|ui| {
+                        // `radio_value` : un bouton radio qui met `style.anchor` à la valeur donnée.
+                        for (anchor, label) in [
+                            (Anchor::Left, Text::AnchorLeft),
+                            (Anchor::Center, Text::AnchorCenter),
+                            (Anchor::Right, Text::AnchorRight),
+                        ] {
+                            changed |= ui
+                                .radio_value(&mut style.anchor, anchor, t(label))
+                                .on_hover_text(t(Text::TooltipAnchor))
+                                .changed();
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label("");
+                    changed |= ui
+                        .checkbox(&mut style.always_on_top, t(Text::AlwaysOnTop))
+                        .on_hover_text(t(Text::TooltipAlwaysOnTop))
+                        .changed();
+                    ui.end_row();
+                });
+        },
+    );
+    if clicked {
+        sections.insert(advanced_key, !advanced_open);
+        changed = true;
+    }
+
+    if ui.button(t(Text::ResetDisplay)).clicked() {
+        // On rétablit l'affichage, mais on GARDE les sons (réglés dans un autre onglet).
+        // `..defaults.clone()` : tous les autres champs viennent de l'affichage par défaut.
+        *style = reset_display(style, defaults);
+        changed = true;
+    }
     changed
+}
+
+/// L'affichage par défaut, en gardant les sons du compteur (ils se règlent dans un autre onglet).
+fn reset_display(style: &DisplayStyle, defaults: &DisplayStyle) -> DisplayStyle {
+    // `..defaults.clone()` : tous les autres champs viennent de l'affichage par défaut.
+    DisplayStyle {
+        sounds: style.sounds.clone(),
+        ..defaults.clone()
+    }
+}
+
+/// Le bouton « haut-parleur » : coupe ou réactive un son. Dessiné à la main (la police
+/// intégrée n'a pas toutes les icônes) : un haut-parleur, avec des ondes s'il est actif,
+/// une croix s'il est coupé. Renvoie `true` si l'état a changé.
+fn mute_toggle(ui: &mut egui::Ui, muted: &mut bool) -> bool {
+    let size = egui::vec2(26.0, 20.0);
+    // `allocate_exact_size` : réserve la place et donne la réponse (clic, survol).
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let response = response.on_hover_text(t(Text::MuteTooltip));
+    let visuals = ui.style().interact(&response);
+    let painter = ui.painter();
+    painter.rect_filled(rect, 4.0, visuals.weak_bg_fill);
+    let color = if *muted {
+        ui.visuals().warn_fg_color
+    } else {
+        visuals.fg_stroke.color
+    };
+    let c = rect.center() + egui::vec2(-5.0, 0.0);
+    // Le corps du haut-parleur : un petit rectangle et un trapèze.
+    let body = egui::Rect::from_center_size(c + egui::vec2(-3.0, 0.0), egui::vec2(3.0, 6.0));
+    painter.rect_filled(body, 0.0, color);
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            c + egui::vec2(-1.5, -3.0),
+            c + egui::vec2(3.5, -7.0),
+            c + egui::vec2(3.5, 7.0),
+            c + egui::vec2(-1.5, 3.0),
+        ],
+        color,
+        egui::Stroke::NONE,
+    ));
+    let stroke = egui::Stroke::new(1.6, color);
+    if *muted {
+        // Une croix à droite.
+        let x = c + egui::vec2(9.5, 0.0);
+        painter.line_segment(
+            [x + egui::vec2(-3.0, -3.0), x + egui::vec2(3.0, 3.0)],
+            stroke,
+        );
+        painter.line_segment(
+            [x + egui::vec2(-3.0, 3.0), x + egui::vec2(3.0, -3.0)],
+            stroke,
+        );
+    } else {
+        // Deux « ondes » : des petits arcs approchés par des segments.
+        for radius in [5.5_f32, 9.0] {
+            let points: Vec<egui::Pos2> = (-3..=3)
+                .map(|i| {
+                    let angle = i as f32 * 0.22;
+                    c + egui::vec2(2.0 + radius * angle.cos(), radius * angle.sin())
+                })
+                .collect();
+            painter.add(egui::Shape::line(points, stroke));
+        }
+    }
+    if response.clicked() {
+        *muted = !*muted;
+        return true;
+    }
+    false
 }
 
 /// Les sons proposés dans les listes (relus au démarrage et après un import).
@@ -270,7 +422,7 @@ pub fn sound_editor(
                 if ui.button(t(Text::Listen)).clicked() {
                     request = Some(SoundRequest::Preview(settings.sound.clone()));
                 }
-                changed |= ui.checkbox(&mut settings.muted, t(Text::Mute)).changed();
+                changed |= mute_toggle(ui, &mut settings.muted);
                 ui.end_row();
             }
         });
@@ -425,6 +577,7 @@ pub fn shortcuts_editor(
     error: Option<&str>,
     mouse_method: MouseMethod,
     mouse_rate: Option<u32>,
+    sections: &mut Sections,
 ) -> Option<ShortcutRequest> {
     let mut request = None;
     // Pendant une capture, tous les autres boutons sont désactivés.
@@ -442,26 +595,6 @@ pub fn shortcuts_editor(
         });
         ui.add_space(8.0);
     }
-
-    // Méthode d'écoute de la souris.
-    ui.horizontal_wrapped(|ui| {
-        ui.label(t(Text::MouseMethodLabel));
-        for (method, label) in [
-            (MouseMethod::RawInput, Text::MouseRawInput),
-            (MouseMethod::Polling, Text::MousePolling),
-        ] {
-            if ui
-                .add_enabled(
-                    idle,
-                    egui::RadioButton::new(mouse_method == method, t(label)),
-                )
-                .clicked()
-            {
-                request = Some(ShortcutRequest::SetMouseMethod(method));
-            }
-        }
-    });
-    ui.add_space(8.0);
 
     ui.add(egui::Label::new(t(Text::ShortcutsHelp)).wrap());
     if let Some(error) = error {
@@ -562,6 +695,45 @@ pub fn shortcuts_editor(
     {
         request = Some(ShortcutRequest::RestoreDefaults);
     }
+
+    // Méthode d'écoute de la souris : rarement modifiée, dans une section repliée.
+    ui.add_space(8.0);
+    let open = is_open(sections, "shortcuts_advanced", false);
+    let clicked = section(
+        ui,
+        "shortcuts_advanced",
+        t(Text::AdvancedSection),
+        open,
+        |ui| {
+            ui.label(t(Text::MouseMethodLabel));
+            for (method, label, tooltip) in [
+                (
+                    MouseMethod::RawInput,
+                    Text::MouseRawInput,
+                    Text::TooltipRawInput,
+                ),
+                (
+                    MouseMethod::Polling,
+                    Text::MousePolling,
+                    Text::TooltipPolling,
+                ),
+            ] {
+                if ui
+                    .add_enabled(
+                        idle,
+                        egui::RadioButton::new(mouse_method == method, t(label)),
+                    )
+                    .on_hover_text(t(tooltip))
+                    .clicked()
+                {
+                    request = Some(ShortcutRequest::SetMouseMethod(method));
+                }
+            }
+        },
+    );
+    if clicked {
+        sections.insert("shortcuts_advanced".to_string(), !open);
+    }
     request
 }
 
@@ -569,6 +741,29 @@ pub fn shortcuts_editor(
 mod tests {
     use super::*;
     use crate::counter::CounterAction;
+
+    #[test]
+    fn reset_display_keeps_the_sounds() {
+        let mut style = DisplayStyle {
+            font_size: 99.0,
+            template: "Coffres : {value}".into(),
+            ..DisplayStyle::default()
+        };
+        style.sounds.increment.muted = true;
+        let reset = reset_display(&style, &DisplayStyle::default());
+        assert_eq!(reset.font_size, DisplayStyle::default().font_size);
+        assert_eq!(reset.template, DisplayStyle::default().template);
+        assert!(reset.sounds.increment.muted); // les sons ne bougent pas
+    }
+
+    #[test]
+    fn section_state_uses_default_until_changed() {
+        let mut sections = Sections::new();
+        assert!(is_open(&sections, "counter_global", true));
+        assert!(!is_open(&sections, "global_style_display", false));
+        sections.insert("counter_global".into(), false);
+        assert!(!is_open(&sections, "counter_global", true));
+    }
 
     #[test]
     fn embedded_sound_names_are_readable() {
