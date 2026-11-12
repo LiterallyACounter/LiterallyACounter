@@ -53,6 +53,12 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 # Exe final (étape 11b) : mesuré 8,82 Mo → 5,39 Mo, sans écart mesurable de vitesse ni de démarrage.
+# Outils utilisés seulement À LA COMPILATION (`build.rs`), rien n'est ajouté à l'exe à part
+# l'icône elle-même : `winresource` intègre `assets/icon/icon.ico` dans le fichier .exe
+# (icône dans l'explorateur, les raccourcis et le gestionnaire des tâches).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.34"
+
 [profile.release]
 lto = true          # optimise tout le programme d'un coup (« link-time optimization »)
 codegen-units = 1   # un seul bloc de compilation : optimisations plus poussées

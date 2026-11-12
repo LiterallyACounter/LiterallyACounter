@@ -248,6 +248,25 @@ struct App {
     state_path: Option<PathBuf>,
 }
 
+/// L'icône des fenêtres (barre de titre, barre des tâches, Alt+Tab) : 64 × 64 pixels RGBA
+/// bruts, générés une fois et intégrés à l'exe (16 Ko). Des pixels bruts plutôt qu'un PNG :
+/// pas besoin de bibliothèque de décodage d'images.
+///
+/// `OnceLock` : une valeur calculée au PREMIER appel, puis réutilisée. Les fenêtres sont
+/// redécrites à chaque image : on évite ainsi de recopier les pixels à chaque fois
+/// (`Arc::clone` ne copie qu'un pointeur).
+fn app_icon() -> std::sync::Arc<egui::IconData> {
+    static ICON: std::sync::OnceLock<std::sync::Arc<egui::IconData>> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        std::sync::Arc::new(egui::IconData {
+            rgba: include_bytes!("../assets/icon/icon_64.rgba").to_vec(),
+            width: 64,
+            height: 64,
+        })
+    })
+    .clone()
+}
+
 impl App {
     /// Exécute une commande. Toutes les commandes (clavier, souris, clics) passent par ici.
     /// `ctx` : le contexte egui, pour pouvoir réveiller l'affichage plus tard.
@@ -343,6 +362,7 @@ impl App {
     fn main_window(&mut self, ctx: &egui::Context) {
         // Assez large pour les raccourcis en deux colonnes (touche, compteurs visés, ×).
         let builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title(i18n::text(Text::ConfigWindowTitle))
             .with_inner_size([720.0, 640.0])
             .with_min_inner_size([620.0, 240.0]);
@@ -1077,6 +1097,7 @@ impl App {
             egui::WindowLevel::Normal
         };
         let builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title(window.title())
             .with_position(position)
             .with_inner_size(INITIAL_COUNTER_SIZE)
@@ -1226,6 +1247,7 @@ impl App {
         );
         let title = i18n::text(Text::MenuButtonWindowTitle);
         let builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title(title.clone())
             .with_position(position)
             .with_inner_size(MENU_BUTTON_SIZE)
@@ -1292,6 +1314,7 @@ impl App {
         let id = self.windows[index].id;
         let title = i18n::text(Text::MenuWindowTitle);
         let builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title(title.clone())
             .with_position(menu.position)
             .with_inner_size(menu.size)
@@ -1673,6 +1696,7 @@ fn main() -> eframe::Result {
     // hors de la barre des tâches, et qui ne prend pas le focus.
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title("Literally A Counter (host)")
             .with_inner_size([1.0, 1.0])
             .with_position([0.0, 0.0])
