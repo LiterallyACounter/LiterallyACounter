@@ -152,9 +152,9 @@ volume = Volume
 # Aucune sortie audio.
 no-audio = Aucune sortie audio disponible : l'appli fonctionne sans son.
 # La sortie voulue refuse de s'ouvrir. Emplacement : `{name}` (sortie réellement utilisée).
-output-unavailable = Cette sortie n'a pas pu être ouverte (elle est peut-être réservée par une autre appli, comme Voicemeeter) : le son passe par « { $name } ».
+output-unavailable = Cette sortie n'a pas pu être ouverte (elle est peut-être utilisée en exclusivité par une autre appli, comme un logiciel audio ou un mixeur virtuel) : le son passe par « { $name } ».
 # Sortie choisie qui refuse de s'ouvrir. Emplacement : `{name}`.
-output-refused = « { $name } » n'a pas pu être ouverte (elle est peut-être réservée par une autre appli, comme Voicemeeter) : la sortie précédente est conservée.
+output-refused = « { $name } » n'a pas pu être ouverte (elle est peut-être utilisée en exclusivité par une autre appli, comme un logiciel audio ou un mixeur virtuel) : la sortie précédente est conservée.
 # Titre de la section des sons.
 sounds = Sons
 # Emplacement de son : +.
