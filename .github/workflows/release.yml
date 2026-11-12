@@ -1,0 +1,47 @@
+# Compile l'exe et crée la page Release quand un tag de version arrive sur le dépôt public.
+# Tout se fait sur les machines de GitHub, à partir du code publié : chacun peut vérifier
+# d'où vient l'exe (journal de la compilation, empreinte SHA-256 dans les notes).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # créer la page Release
+
+jobs:
+  release:
+    # Seulement sur un dépôt public.
+    if: ${{ !github.event.repository.private }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust à jour
+        run: rustup update stable --no-self-update
+
+      - name: Tests
+        run: cargo test --release --locked
+
+      - name: Compilation
+        run: cargo build --release --locked
+
+      - name: Notes de version
+        shell: bash
+        run: |
+          # Les sections « ### vX.Y.Z » de CHANGELOG.md, en anglais puis en français.
+          awk -v v="### $GITHUB_REF_NAME " '
+            /^## /  { lang = substr($0, 4); inside = 0; next }
+            /^### / { inside = (index($0, v) == 1); if (inside) print "## " lang "\n"; }
+            inside  { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "Aucune note pour $GITHUB_REF_NAME dans CHANGELOG.md"; exit 1; }
+          sha=$(sha256sum target/release/literally_a_counter.exe | cut -d' ' -f1)
+          printf '\n---\n\nSHA-256 `literally_a_counter.exe` : `%s`\n' "$sha" >> notes.md
+
+      - name: Page Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" target/release/literally_a_counter.exe --title "$GITHUB_REF_NAME" --notes-file notes.md
