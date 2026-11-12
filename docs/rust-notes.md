@@ -643,3 +643,68 @@ On donne les champs à garder ; `..` prend tous les autres dans une autre valeur
 ### Une valeur ajoutée sans casser les anciennes sauvegardes
 
 `round_copies_global_sounds: Option<bool>` : absent d'une ancienne sauvegarde, il vaut `None`, et on reprend alors `round_copies_global`. `Option` sert ici à distinguer « jamais réglé » de « réglé à faux ».
+
+### Une valeur par défaut pour un enum : `#[default]` (11e)
+
+```rust
+#[derive(Default)]
+pub enum CounterId {
+    Global,
+    #[default]
+    Round, // CounterId::default() == Round
+}
+```
+
+`#[derive(Default)]` sait fabriquer une valeur « par défaut » pour une struct (chaque champ à sa valeur par défaut), mais pas pour un enum : il faut lui dire quelle variante prendre, avec `#[default]`. Une ancienne sauvegarde sans `sound_priority` reprend ainsi la session.
+
+### `match` sur un couple de valeurs (11e)
+
+```rust
+let id = match (targets.global, targets.round) {
+    (true, true) => self.sound_priority, // les deux comptent : on suit la priorité
+    (false, true) => CounterId::Round,
+    _ => CounterId::Global,              // `_` : tous les autres cas
+};
+```
+
+On regroupe deux booléens dans un tuple `(a, b)` et on traite chaque combinaison. Rust vérifie qu'aucun cas n'est oublié.
+
+### Découper une liste en paires : `chunks(2)` et `zip` (11e)
+
+```rust
+for (row, pair) in CommandKind::ALL.chunks(2).enumerate() {
+    ui.columns(2, |columns| {
+        for (column, &kind) in columns.iter_mut().zip(pair) {
+            request = request.or(kind_editor(column, kind, /* … */));
+        }
+    });
+}
+```
+
+- `chunks(2)` : des morceaux de 2 éléments (`[+1, −1]`, `[+5, −5]`…).
+- `zip` : avance dans deux listes à la fois (une colonne, une action) et s'arrête à la plus courte.
+- `Option::or` : garde la première valeur `Some` ; une demande déjà trouvée n'est pas écrasée.
+- `ui.horizontal(|ui| …).inner` : la valeur renvoyée par la closure (ici, la réponse du curseur).
+
+### L'icône : du code qui tourne pendant la compilation
+
+- **`build.rs`** : un petit programme que Cargo compile et lance **avant** de compiler l'appli. Ici, il intègre `assets/icon/icon.ico` dans le fichier `.exe` (icône de l'explorateur, des raccourcis, de la barre des tâches).
+- **Dépendance de compilation, sur Windows seulement** : elle sert à `build.rs` et n'entre pas dans l'exe.
+
+  ```toml
+  [target.'cfg(windows)'.build-dependencies]
+  winresource = "0.1.34"
+  ```
+
+  `cfg(windows)` : sur Linux ou Mac, Cargo l'ignore (l'icône s'y gère autrement).
+- `println!("cargo:rerun-if-changed=assets/icon/icon.ico")` : `build.rs` ne se relance que si l'icône change.
+- **`include_bytes!("…")`** : recopie un fichier dans l'exe à la compilation (comme les sons de l'étape 9). Les fenêtres reçoivent les pixels bruts d'une version 64 × 64.
+- **`OnceLock`** : une variable globale remplie **une seule fois**, au premier appel.
+
+  ```rust
+  static ICON: OnceLock<Arc<egui::IconData>> = OnceLock::new();
+  ICON.get_or_init(|| Arc::new(egui::IconData { /* … */ })).clone()
+  ```
+
+  Les 5 types de fenêtres demandent l'icône à chaque création : `OnceLock` évite de recopier les 16 Ko à chaque fois, et `Arc::clone` ne copie qu'un pointeur.
+- L'icône est générée par un script (`tools/gen_icon.py`) plutôt que dessinée à la main : les petites tailles (16 à 24 px) reçoivent un dessin simplifié, pour rester lisibles.
