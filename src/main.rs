@@ -43,10 +43,10 @@ const INITIAL_COUNTER_SIZE: egui::Vec2 = egui::vec2(200.0, 100.0);
 /// Les onglets de la fenêtre de configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigTab {
-    General,
     Counters,
     Shortcuts,
     Sound,
+    Info,
 }
 
 /// Taille de la fenêtre du menu d'un compteur, sans la liste des raccourcis.
@@ -216,10 +216,16 @@ struct App {
     mouse_method: MouseMethod,
     /// Fréquence des événements souris, si elle est élevée (protection automatique).
     mouse_rate: Option<u32>,
+    /// « La partie utilise les sons du global ».
+    round_copies_global_sounds: bool,
+    /// Sections repliées / dépliées de la configuration.
+    sections: config_window::Sections,
     /// Sortie audio choisie (`None` : celle par défaut de Windows).
     audio_output: Option<String>,
     /// Volume général, de 0.0 à 1.0.
     volume: f32,
+    /// Muet général : aucun son (comptage, « Écouter », bip de test).
+    all_muted: bool,
     /// Les sorties audio disponibles (relues quand on ouvre la liste).
     audio_outputs: Vec<audio::OutputDevice>,
     /// La sortie par défaut de Windows, relue au plus une fois par seconde dans l'onglet Son
@@ -242,6 +248,25 @@ struct App {
     state_path: Option<PathBuf>,
 }
 
+/// L'icône des fenêtres (barre de titre, barre des tâches, Alt+Tab) : 64 × 64 pixels RGBA
+/// bruts, générés une fois et intégrés à l'exe (16 Ko). Des pixels bruts plutôt qu'un PNG :
+/// pas besoin de bibliothèque de décodage d'images.
+///
+/// `OnceLock` : une valeur calculée au PREMIER appel, puis réutilisée. Les fenêtres sont
+/// redécrites à chaque image : on évite ainsi de recopier les pixels à chaque fois
+/// (`Arc::clone` ne copie qu'un pointeur).
+fn app_icon() -> std::sync::Arc<egui::IconData> {
+    static ICON: std::sync::OnceLock<std::sync::Arc<egui::IconData>> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        std::sync::Arc::new(egui::IconData {
+            rgba: include_bytes!("../assets/icon/icon_64.rgba").to_vec(),
+            width: 64,
+            height: 64,
+        })
+    })
+    .clone()
+}
+
 impl App {
     /// Exécute une commande. Toutes les commandes (clavier, souris, clics) passent par ici.
     /// `ctx` : le contexte egui, pour pouvoir réveiller l'affichage plus tard.
@@ -251,6 +276,7 @@ impl App {
         let outcome = self.tracker.handle(command, now);
         // `if let A && let B` : les deux motifs doivent correspondre (un son ET un moteur audio).
         if let Some((counter, slot)) = outcome.sound
+            && !self.all_muted
             && let Some(audio) = &mut self.audio
         {
             audio.play(counter, slot);
@@ -291,6 +317,10 @@ impl App {
             audio_output: self.audio_output.clone(),
             volume: self.volume,
             language: self.language.clone(),
+            round_copies_global_sounds: Some(self.round_copies_global_sounds),
+            open_sections: self.sections.clone(),
+            all_muted: self.all_muted,
+            sound_priority: self.tracker.sound_priority,
         };
         if let Err(error) = storage::save(path, &state) {
             eprintln!("Sauvegarde impossible : {error}");
@@ -328,12 +358,14 @@ impl App {
         (text, style.text_color(counter.goal_reached()))
     }
 
-    /// La fenêtre principale : la configuration, en deux onglets.
+    /// La fenêtre principale : la configuration, en quatre onglets.
     fn main_window(&mut self, ctx: &egui::Context) {
+        // Assez large pour les raccourcis en deux colonnes (touche, compteurs visés, ×).
         let builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title(i18n::text(Text::ConfigWindowTitle))
-            .with_inner_size([520.0, 640.0])
-            .with_min_inner_size([360.0, 240.0]);
+            .with_inner_size([720.0, 640.0])
+            .with_min_inner_size([620.0, 240.0]);
         // `show_viewport_immediate` : affiche une fenêtre supplémentaire, dessinée TOUT DE SUITE
         // par la closure. La closure peut donc emprunter `self` (pas besoin de partager les
         // données entre threads, contrairement aux viewports « deferred »).
@@ -348,10 +380,10 @@ impl App {
                     // `selectable_value` : un bouton « sélectionné » quand `self.tab` vaut cette
                     // valeur ; un clic met `self.tab` à cette valeur.
                     for (tab, label) in [
-                        (ConfigTab::General, Text::TabGeneral),
                         (ConfigTab::Counters, Text::TabCounters),
                         (ConfigTab::Shortcuts, Text::TabShortcuts),
                         (ConfigTab::Sound, Text::TabSound),
+                        (ConfigTab::Info, Text::TabInfo),
                     ] {
                         ui.selectable_value(&mut self.tab, tab, i18n::text(label));
                     }
@@ -366,24 +398,39 @@ impl App {
                 // Barre de défilement si la fenêtre est trop petite pour tout afficher.
                 egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
                     ConfigTab::Counters => {
-                        ui.add(egui::Label::new(i18n::text(Text::MenuHint)).wrap());
-                        if let Some(error) = &self.import_error {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(error).color(ui.visuals().warn_fg_color),
-                                )
-                                .wrap(),
-                            );
-                        }
-                        ui.add_space(8.0);
                         for index in 0..self.windows.len() {
-                            self.unsaved_changes |= self.counter_settings(ui, index);
-                            ui.add_space(12.0);
+                            let key = match self.windows[index].id {
+                                CounterId::Global => "counter_global",
+                                CounterId::Round => "counter_round",
+                            };
+                            let title =
+                                egui::RichText::new(i18n::text(match self.windows[index].id {
+                                    CounterId::Global => Text::GlobalCounter,
+                                    CounterId::Round => Text::RoundCounter,
+                                }))
+                                .heading();
+                            // `std::mem::take` : on sort la carte des sections de `self` le temps
+                            // de l'appel (et on la remet après), pour pouvoir prêter `self` en
+                            // entier à la closure. Sinon, deux emprunts de `self` se chevauchent.
+                            let mut sections = std::mem::take(&mut self.sections);
+                            let open = config_window::is_open(&sections, key, true);
+                            let mut changed = false;
+                            let clicked = config_window::section(ui, key, title, open, |ui| {
+                                changed |= self.counter_settings(ui, index, &mut sections);
+                            });
+                            if clicked {
+                                sections.insert(key.to_string(), !open);
+                                changed = true;
+                            }
+                            self.sections = sections;
+                            self.unsaved_changes |= changed;
+                            ui.add_space(8.0);
                         }
                     }
-                    ConfigTab::General => self.general_settings(ui),
+                    ConfigTab::Info => self.info_tab(ui),
                     ConfigTab::Sound => self.sound_settings(ui),
                     ConfigTab::Shortcuts => {
+                        let mut sections = std::mem::take(&mut self.sections);
                         let request = config_window::shortcuts_editor(
                             ui,
                             &self.shortcuts,
@@ -391,7 +438,12 @@ impl App {
                             self.capture_error.as_deref(),
                             self.mouse_method,
                             self.mouse_rate,
+                            &mut sections,
                         );
+                        if sections != self.sections {
+                            self.unsaved_changes = true;
+                        }
+                        self.sections = sections;
                         if let Some(request) = request {
                             self.on_shortcut_request(request);
                         }
@@ -406,9 +458,15 @@ impl App {
         });
     }
 
-    /// L'onglet Général : pour l'instant, la langue de l'interface (interface à retravailler
-    /// à la fin du projet).
-    fn general_settings(&mut self, ui: &mut egui::Ui) {
+    /// L'onglet Infos : nom et version, langue, mode d'emploi, crédits, dossier de l'appli.
+    fn info_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Literally A Counter");
+        // `env!` : une valeur connue à la COMPILATION (ici, la version écrite dans Cargo.toml).
+        ui.label(i18n::message(
+            Text::AppVersion,
+            &[("version", env!("CARGO_PKG_VERSION"))],
+        ));
+        ui.add_space(8.0);
         egui::Grid::new("general_settings")
             .num_columns(2)
             .spacing([12.0, 10.0])
@@ -443,9 +501,38 @@ impl App {
                 }
                 ui.end_row();
             });
+
+        ui.add_space(12.0);
+        ui.strong(i18n::text(Text::GuideTitle));
+        for text in [
+            Text::GuideCount,
+            Text::GuideReset,
+            Text::MenuHint,
+            Text::GuideMove,
+            Text::GuideStream,
+        ] {
+            // « • » en tête de ligne, et retour à la ligne automatique.
+            ui.add(egui::Label::new(format!("•  {}", i18n::text(text))).wrap());
+        }
+
+        ui.add_space(12.0);
+        ui.add(egui::Label::new(egui::RichText::new(i18n::text(Text::Credits)).small()).wrap());
+        ui.add_space(8.0);
+        let folder = storage::state_path().and_then(|path| path.parent().map(|p| p.to_path_buf()));
+        if let Some(folder) = folder
+            && ui
+                .button(i18n::text(Text::OpenAppFolder))
+                .on_hover_text(i18n::text(Text::OpenAppFolderTooltip))
+                .clicked()
+        {
+            // Le dossier peut ne pas exister encore (rien sauvegardé) : on le crée.
+            let _ = std::fs::create_dir_all(&folder);
+            // L'explorateur de fichiers de Windows, ouvert sur ce dossier.
+            let _ = std::process::Command::new("explorer").arg(&folder).spawn();
+        }
     }
 
-    /// L'onglet Son : sortie audio et volume général.
+    /// L'onglet Son et tonalités : sortie audio, volume, et les sons de chaque compteur.
     fn sound_settings(&mut self, ui: &mut egui::Ui) {
         if self.audio.is_none() {
             ui.colored_label(ui.visuals().warn_fg_color, i18n::text(Text::NoAudio));
@@ -520,14 +607,28 @@ impl App {
                 ui.label(i18n::text(Text::Volume));
                 // Le curseur travaille en pourcents (0 à 100), le moteur en 0.0 à 1.0.
                 let mut percent = (self.volume * 100.0).round();
-                let response = ui.add(
-                    egui::Slider::new(&mut percent, 0.0..=100.0)
-                        .suffix(" %")
-                        .step_by(1.0)
-                        .fixed_decimals(0), // « 100 % » et non « 100.0 % »
-                );
+                // `ui.horizontal(...)` renvoie le résultat de la closure dans `.inner` :
+                // ici, la réponse du curseur (pour savoir s'il a bougé ou été relâché).
+                let response = ui
+                    .horizontal(|ui| {
+                        let response = ui.add(
+                            egui::Slider::new(&mut percent, 0.0..=100.0)
+                                .suffix(" %")
+                                .step_by(1.0)
+                                .fixed_decimals(0), // « 100 % » et non « 100.0 % »
+                        );
+                        // Le muet général, juste à droite du volume.
+                        if config_window::mute_toggle(ui, &mut self.all_muted, Text::MuteAllTooltip)
+                        {
+                            self.save_state();
+                        }
+                        response
+                    })
+                    .inner;
                 if response.changed() {
                     self.volume = percent / 100.0;
+                    // Régler un nouveau volume réactive le son.
+                    self.all_muted = false;
                     if let Some(audio) = &mut self.audio {
                         audio.set_volume(self.volume);
                     }
@@ -543,14 +644,117 @@ impl App {
                     self.save_state();
                 }
                 ui.end_row();
+
+                // Le son joué quand un raccourci fait compter les deux compteurs.
+                ui.label(i18n::text(Text::SoundPriority))
+                    .on_hover_text(i18n::text(Text::SoundPriorityTooltip));
+                ui.horizontal(|ui| {
+                    for (id, label) in [
+                        (CounterId::Global, Text::PriorityGlobal),
+                        (CounterId::Round, Text::PriorityRound),
+                    ] {
+                        // `selectable_value` : un bouton « enfoncé » quand la valeur est la
+                        // sienne ; un clic y met la valeur. Deux boutons = un interrupteur.
+                        if ui
+                            .selectable_value(
+                                &mut self.tracker.sound_priority,
+                                id,
+                                i18n::text(label),
+                            )
+                            .on_hover_text(i18n::text(Text::SoundPriorityTooltip))
+                            .changed()
+                        {
+                            self.save_state();
+                        }
+                    }
+                });
+                ui.end_row();
             });
+
+        // Les sons de chaque compteur, dans des sections repliées par défaut.
+        ui.add_space(8.0);
+        if let Some(error) = &self.import_error {
+            ui.add(
+                egui::Label::new(egui::RichText::new(error).color(ui.visuals().warn_fg_color))
+                    .wrap(),
+            );
+        }
+        let mut changed = false;
+        let open = config_window::is_open(&self.sections, "sounds_global", false);
+        let clicked = config_window::section(
+            ui,
+            "sounds_global",
+            i18n::text(Text::GlobalCounter),
+            open,
+            |ui| {
+                let (sounds_changed, request) = config_window::sound_editor(
+                    ui,
+                    "global_sounds",
+                    &mut self.global_style.sounds,
+                    &self.sound_catalog,
+                );
+                changed |= sounds_changed;
+                if let Some(request) = request {
+                    self.on_sound_request(ui.ctx(), CounterId::Global, request);
+                }
+            },
+        );
+        if clicked {
+            self.sections.insert("sounds_global".to_string(), !open);
+            changed = true;
+        }
+        let open = config_window::is_open(&self.sections, "sounds_round", false);
+        let clicked = config_window::section(
+            ui,
+            "sounds_round",
+            i18n::text(Text::RoundCounter),
+            open,
+            |ui| {
+                changed |= ui
+                    .checkbox(
+                        &mut self.round_copies_global_sounds,
+                        i18n::text(Text::RoundUsesGlobalSounds),
+                    )
+                    .changed();
+                // Sons du global utilisés : ceux de la partie restent visibles, mais grisés.
+                let enabled = !self.round_copies_global_sounds;
+                ui.add_enabled_ui(enabled, |ui| {
+                    let (sounds_changed, request) = config_window::sound_editor(
+                        ui,
+                        "round_sounds",
+                        &mut self.round_style.sounds,
+                        &self.sound_catalog,
+                    );
+                    changed |= sounds_changed;
+                    if let Some(request) = request {
+                        self.on_sound_request(ui.ctx(), CounterId::Round, request);
+                    }
+                });
+            },
+        );
+        if clicked {
+            self.sections.insert("sounds_round".to_string(), !open);
+            changed = true;
+        }
+        self.unsaved_changes |= changed;
+    }
+
+    /// Les sons effectivement utilisés par un compteur : la partie prend ceux du global quand
+    /// « Utiliser les sons du global » est cochée.
+    fn sounds(&self, id: CounterId) -> &audio::SoundSet {
+        match id {
+            CounterId::Round if !self.round_copies_global_sounds => &self.round_style.sounds,
+            _ => &self.global_style.sounds,
+        }
     }
 
     /// Exécute une demande de la section Sons d'un compteur.
     fn on_sound_request(&mut self, ctx: &egui::Context, id: CounterId, request: SoundRequest) {
         match request {
             SoundRequest::Preview(choice) => {
-                if let Some(audio) = &mut self.audio {
+                if !self.all_muted
+                    && let Some(audio) = &mut self.audio
+                {
                     audio.preview(&choice);
                 }
             }
@@ -637,7 +841,9 @@ impl App {
         } else {
             self.audio_output = output;
         }
-        if let Some(audio) = &mut self.audio {
+        if !self.all_muted
+            && let Some(audio) = &mut self.audio
+        {
             audio.play_test_beep();
         }
         self.save_state();
@@ -678,14 +884,15 @@ impl App {
     }
 
     /// La section de configuration d'un compteur. Renvoie `true` si un réglage a changé.
-    fn counter_settings(&mut self, ui: &mut egui::Ui, index: usize) -> bool {
+    fn counter_settings(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        sections: &mut config_window::Sections,
+    ) -> bool {
         let mut changed = false;
         let window = &mut self.windows[index];
         let id = window.id;
-        ui.heading(i18n::text(match id {
-            CounterId::Global => Text::GlobalCounter,
-            CounterId::Round => Text::RoundCounter,
-        }));
 
         let mut visible = window.visible;
         // `checkbox` modifie `visible` quand on clique ; `.changed()` le signale.
@@ -718,59 +925,51 @@ impl App {
             .cloned()
             .collect();
         let in_use: Vec<&str> = in_use.iter().map(String::as_str).collect();
-        match id {
-            CounterId::Global => {
-                changed |= config_window::style_editor(
-                    ui,
-                    "global_style",
-                    &mut self.global_style,
-                    &mut self.fonts,
-                    &in_use,
-                );
-                ui.add_space(6.0);
-                let (sounds_changed, request) = config_window::sound_editor(
-                    ui,
-                    "global_sounds",
-                    &mut self.global_style.sounds,
-                    &self.sound_catalog,
-                );
-                changed |= sounds_changed;
-                if let Some(request) = request {
-                    self.on_sound_request(ui.ctx(), id, request);
-                }
-            }
-            CounterId::Round => {
-                // `|=` : « ou » cumulatif (`changed` reste vrai s'il l'était déjà).
-                changed |= ui
-                    .checkbox(
-                        &mut self.round_copies_global,
-                        i18n::text(Text::RoundCopiesGlobal),
-                    )
-                    .changed();
-                // Copie activée : les réglages propres de la partie restent visibles, mais grisés
-                // (`add_enabled_ui(false, ...)` désactive tout ce qui est dessiné dedans).
-                let enabled = !self.round_copies_global;
+        if id == CounterId::Round {
+            // `|=` : « ou » cumulatif (`changed` reste vrai s'il l'était déjà).
+            changed |= ui
+                .checkbox(
+                    &mut self.round_copies_global,
+                    i18n::text(Text::RoundCopiesGlobal),
+                )
+                .on_hover_text(i18n::text(Text::TooltipCopyDisplay))
+                .changed();
+        }
+        // L'affichage, dans une section repliée par défaut.
+        let (key, style, defaults) = match id {
+            CounterId::Global => (
+                "global_style",
+                &mut self.global_style,
+                DisplayStyle::default(),
+            ),
+            CounterId::Round => (
+                "round_style",
+                &mut self.round_style,
+                DisplayStyle::round_default(),
+            ),
+        };
+        // Copie activée : les réglages propres de la partie restent visibles, mais grisés
+        // (`add_enabled_ui(false, ...)` désactive tout ce qui est dessiné dedans).
+        let enabled = !(id == CounterId::Round && self.round_copies_global);
+        let fonts = &mut self.fonts;
+        let display_key = format!("{key}_display");
+        let open = config_window::is_open(sections, &display_key, false);
+        let clicked = config_window::section(
+            ui,
+            &display_key,
+            i18n::text(Text::DisplaySection),
+            open,
+            |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
                     changed |= config_window::style_editor(
-                        ui,
-                        "round_style",
-                        &mut self.round_style,
-                        &mut self.fonts,
-                        &in_use,
+                        ui, key, style, fonts, &in_use, sections, &defaults,
                     );
-                    ui.add_space(6.0);
-                    let (sounds_changed, request) = config_window::sound_editor(
-                        ui,
-                        "round_sounds",
-                        &mut self.round_style.sounds,
-                        &self.sound_catalog,
-                    );
-                    changed |= sounds_changed;
-                    if let Some(request) = request {
-                        self.on_sound_request(ui.ctx(), id, request);
-                    }
                 });
-            }
+            },
+        );
+        if clicked {
+            sections.insert(display_key, !open);
+            changed = true;
         }
         changed
     }
@@ -898,6 +1097,7 @@ impl App {
             egui::WindowLevel::Normal
         };
         let builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title(window.title())
             .with_position(position)
             .with_inner_size(INITIAL_COUNTER_SIZE)
@@ -1047,6 +1247,7 @@ impl App {
         );
         let title = i18n::text(Text::MenuButtonWindowTitle);
         let builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title(title.clone())
             .with_position(position)
             .with_inner_size(MENU_BUTTON_SIZE)
@@ -1113,6 +1314,7 @@ impl App {
         let id = self.windows[index].id;
         let title = i18n::text(Text::MenuWindowTitle);
         let builder = egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title(title.clone())
             .with_position(menu.position)
             .with_inner_size(menu.size)
@@ -1418,16 +1620,10 @@ impl eframe::App for App {
         // `try_recv` ne bloque pas : il renvoie `Ok(événement)` s'il y en a un, une erreur sinon.
         // `while let` : boucle tant que le motif correspond (ici, tant qu'il y a des événements).
         // Les sons des compteurs : rechargés seulement s'ils ont changé (presque gratuit sinon).
-        if let Some(audio) = &mut self.audio {
-            for id in CounterId::ALL {
-                let sounds = effective_style(
-                    id,
-                    &self.global_style,
-                    &self.round_style,
-                    self.round_copies_global,
-                )
-                .sounds
-                .clone();
+        for id in CounterId::ALL {
+            // Une copie, pour ne pas emprunter `self` en lecture et `self.audio` en écriture.
+            let sounds = self.sounds(id).clone();
+            if let Some(audio) = &mut self.audio {
                 audio.sync(id, &sounds);
             }
         }
@@ -1500,6 +1696,7 @@ fn main() -> eframe::Result {
     // hors de la barre des tâches, et qui ne prend pas le focus.
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(app_icon())
             .with_title("Literally A Counter (host)")
             .with_inner_size([1.0, 1.0])
             .with_position([0.0, 0.0])
@@ -1551,11 +1748,15 @@ fn main() -> eframe::Result {
             });
 
             Ok(Box::new(App {
-                tracker: Tracker::new(
-                    Counter::new(saved.global_value, saved.global_goal),
-                    // La partie repart TOUJOURS de 0 (sa valeur n'est jamais sauvegardée).
-                    Counter::new(0, saved.round_goal),
-                ),
+                tracker: {
+                    let mut tracker = Tracker::new(
+                        Counter::new(saved.global_value, saved.global_goal),
+                        // La session repart TOUJOURS de 0 (sa valeur n'est jamais sauvegardée).
+                        Counter::new(0, saved.round_goal),
+                    );
+                    tracker.sound_priority = saved.sound_priority;
+                    tracker
+                },
                 events: receiver,
                 hotkeys,
                 audio: AudioEngine::new(saved.audio_output.clone(), saved.volume),
@@ -1576,8 +1777,13 @@ fn main() -> eframe::Result {
                 hovered_counter: None,
                 mouse_method: saved.mouse_method,
                 mouse_rate: None,
+                round_copies_global_sounds: saved
+                    .round_copies_global_sounds
+                    .unwrap_or(saved.round_copies_global),
+                sections: saved.open_sections.clone(),
                 audio_output: saved.audio_output.clone(),
                 volume: saved.volume,
+                all_muted: saved.all_muted,
                 audio_outputs: audio::list_outputs(),
                 default_output: None,
                 output_error: None,

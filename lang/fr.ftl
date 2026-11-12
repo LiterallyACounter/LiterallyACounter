@@ -9,16 +9,14 @@ number-decimal-separator = ,
 number-percent = { $percent } %
 
 ## Interface
-# Onglet des réglages généraux.
-tab-general = Général
 # Choix de la langue de l'interface.
 language-label = Langue
 # Demande de confirmation du reset. Emplacement : `{key}` (touche de validation).
 reset-prompt = Reset ? ({ $key } pour valider)
 # Titre de la fenêtre du compteur global (visible dans la barre des tâches et OBS).
 global-window-title = Literally A Counter : global
-# Titre de la fenêtre du compteur de partie.
-round-window-title = Literally A Counter : partie
+# Titre de la fenêtre du compteur de session.
+round-window-title = Literally A Counter : session
 # Titre de la fenêtre de configuration.
 config-window-title = Literally A Counter : configuration
 # Onglet des compteurs.
@@ -29,8 +27,8 @@ tab-shortcuts = Raccourcis
 quit = Quitter
 # Titre de la section du global.
 global-counter = Compteur global
-# Titre de la section de la partie.
-round-counter = Compteur de partie
+# Titre de la section de la session.
+round-counter = Compteur de session
 # Case « afficher la fenêtre ».
 show-window = Afficher la fenêtre
 # Objectif d'un compteur.
@@ -70,15 +68,15 @@ goal-reached-color = Objectif atteint
 # Couleur des alertes.
 alert-color = Alertes (« Reset ? »)
 # Compteurs visés : les deux.
-target-both = global et partie
+target-both = global et session
 # Compteurs visés : le global.
 target-global = global
-# Compteurs visés : la partie.
-target-round = partie
+# Compteurs visés : la session.
+target-round = session
 # Action reset du global.
 action-reset-global = Reset du global
-# Action reset de la partie.
-action-reset-round = Reset de la partie
+# Action reset de la session.
+action-reset-round = Reset de la session
 # Action valider le reset.
 action-confirm-reset = Valider le reset
 # Action annuler le reset.
@@ -142,7 +140,7 @@ default-font = Police par défaut
 # Champ de recherche de police.
 search-font = Rechercher…
 # Onglet du son.
-tab-sound = Son
+tab-sound = Son et tonalités
 # Choix de la sortie audio.
 audio-output = Sortie audio
 # Sortie par défaut de Windows.
@@ -154,9 +152,9 @@ volume = Volume
 # Aucune sortie audio.
 no-audio = Aucune sortie audio disponible : l'appli fonctionne sans son.
 # La sortie voulue refuse de s'ouvrir. Emplacement : `{name}` (sortie réellement utilisée).
-output-unavailable = Cette sortie n'a pas pu être ouverte (elle est peut-être réservée par une autre appli, comme Voicemeeter) : le son passe par « { $name } ».
+output-unavailable = Cette sortie n'a pas pu être ouverte (elle est peut-être utilisée en exclusivité par une autre appli, comme un logiciel audio ou un mixeur virtuel) : le son passe par « { $name } ».
 # Sortie choisie qui refuse de s'ouvrir. Emplacement : `{name}`.
-output-refused = « { $name } » n'a pas pu être ouverte (elle est peut-être réservée par une autre appli, comme Voicemeeter) : la sortie précédente est conservée.
+output-refused = « { $name } » n'a pas pu être ouverte (elle est peut-être utilisée en exclusivité par une autre appli, comme un logiciel audio ou un mixeur virtuel) : la sortie précédente est conservée.
 # Titre de la section des sons.
 sounds = Sons
 # Emplacement de son : +.
@@ -171,8 +169,6 @@ slot-reset-done = Reset fait
 slot-reset-undone = Reset annulé
 # Bouton pour écouter un son.
 listen = Écouter
-# Case pour couper un son.
-mute = Muet
 # Entrée de liste pour importer.
 import-file = Importer un fichier…
 # Titre de groupe.
@@ -201,6 +197,63 @@ import-unreadable = « { $name } » n'a pas pu être importé : format non pris 
 import-copy-failed = « { $name } » n'a pas pu être copié dans le dossier des sons.
 # Titre de groupe : sons embarqués.
 embedded-sounds = Sons de l'appli (Kenney, CC0)
+
+# Onglet des informations.
+tab-info = Infos
+# Section repliable : affichage d'un compteur.
+display-section = Affichage
+# Section repliable : réglages avancés.
+advanced-section = Avancé
+# Titre des couleurs du texte.
+colors-section = Couleurs du texte
+# Bouton : rétablir l'affichage par défaut.
+reset-display = Rétablir l'affichage par défaut
+# Case : la session utilise les sons du global.
+round-uses-global-sounds = Utiliser les sons du global
+# Bulle de l'icône haut-parleur.
+mute-tooltip = Couper ou réactiver ce son
+# Bulle du muet général.
+mute-all-tooltip = Couper ou réactiver tous les sons (bouger le volume les réactive)
+# Libellé : son prioritaire.
+sound-priority = Son prioritaire
+# Bulle du son prioritaire.
+sound-priority-tooltip = Quand un raccourci fait compter les deux compteurs, un seul son est joué : celui du compteur choisi ici.
+# Bouton : priorité au global.
+priority-global = Global
+# Bouton : priorité à la session.
+priority-round = Session
+# Bulle d'aide du format.
+tooltip-format = Le texte affiché. Les variables entre accolades sont remplacées par la valeur, l'objectif…
+# Bulle d'aide de l'ancrage.
+tooltip-anchor = Le côté qui reste fixe quand le nombre s'allonge (par ex. de 9 à 10).
+# Bulle d'aide du premier plan.
+tooltip-always-on-top = Garde le compteur au-dessus des autres fenêtres, jeu compris.
+# Bulle d'aide du fond transparent.
+tooltip-transparent = Seul le texte est visible : idéal pour OBS.
+# Bulle d'aide de la copie de l'affichage.
+tooltip-copy-display = La session prend le format, la police et les couleurs du global (pas l'objectif).
+# Bulle d'aide de Raw Input.
+tooltip-raw-input = Reçoit tous les événements de la souris : aucun clic manqué, crans de molette disponibles.
+# Bulle d'aide de l'interrogation.
+tooltip-polling = Vérifie les boutons toutes les ~15 ms : un peu plus économe, mais sans crans de molette.
+# Version de l'appli. Emplacement : `{version}`.
+app-version = Version { $version }
+# Bouton : ouvrir le dossier de l'appli.
+open-app-folder = Ouvrir le dossier de l'appli
+# Bulle du bouton du dossier.
+open-app-folder-tooltip = Contient la sauvegarde des réglages et les sons importés.
+# Titre du mode d'emploi.
+guide-title = Mode d'emploi
+# Mode d'emploi : compter.
+guide-count = Compter : appuie sur les raccourcis (onglet Raccourcis), même quand le jeu a le focus. Clic gauche / droit sur un compteur : +1 / −1.
+# Mode d'emploi : reset.
+guide-reset = Reset : celui de la session est immédiat ; celui du global affiche « Reset ? », à valider dans les 3 secondes. Une erreur ? « Annuler le dernier reset ».
+# Mode d'emploi : déplacer, cacher.
+guide-move = Déplacer un compteur : glisse-le avec la souris. Échap le cache (comme décocher « Afficher la fenêtre »).
+# Mode d'emploi : stream.
+guide-stream = Stream : dans OBS, ajoute une « Capture de fenêtre » par compteur. Le bouton ••• et son menu n'apparaissent jamais dans la capture.
+# Crédits.
+credits = Sons de l'appli : « Interface Sounds » de Kenney (www.kenney.nl), licence CC0.
 
 ## Noms des touches (Ctrl, Alt, Num +… sont identiques partout et restent dans le code)
 key-shift = Maj

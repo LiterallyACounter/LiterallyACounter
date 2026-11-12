@@ -17,11 +17,17 @@ use crate::reset::ResetConfirmation;
 ///
 /// Un enum SANS donnée sert ici d'identifiant : impossible de désigner un compteur
 /// qui n'existe pas (contrairement à un numéro, qui pourrait valoir 7).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+///
+/// `Default` + `#[default]` : la valeur par défaut est la session ; elle sert pour le son
+/// prioritaire (`Tracker::sound_priority`), dont la session est le réglage d'origine.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum CounterId {
     /// Compteur persistant (sauvegardé, reset avec confirmation).
     Global,
-    /// Compteur de partie (repart de 0 au lancement, reset immédiat).
+    /// Compteur de session (repart de 0 au lancement, reset immédiat).
+    #[default]
     Round,
 }
 
@@ -87,6 +93,9 @@ pub struct Tracker {
     reset_confirmation: ResetConfirmation,
     /// Le compteur resetté en dernier : c'est lui que « Annuler le reset » restaure.
     last_reset: Option<CounterId>,
+    /// Le compteur dont le son est joué quand une commande fait compter les deux
+    /// (réglage « Son prioritaire » ; la session par défaut).
+    pub sound_priority: CounterId,
 }
 
 impl Tracker {
@@ -185,11 +194,12 @@ impl Tracker {
         if self.last_reset.is_some_and(|id| targets.contains(id)) {
             self.last_reset = None;
         }
-        // Un seul son : celui de la partie si elle est touchée (décision de l'étape 9).
-        let sound_counter = if targets.round {
-            CounterId::Round
-        } else {
-            CounterId::Global
+        // Un seul son : si les deux comptent, celui du compteur prioritaire ; sinon, celui
+        // du seul compteur touché.
+        let sound_counter = match (targets.global, targets.round) {
+            (true, true) => self.sound_priority,
+            (false, true) => CounterId::Round,
+            _ => CounterId::Global,
         };
         Outcome {
             sound: Some((sound_counter, SoundSlot::for_action(action))),
@@ -250,6 +260,27 @@ mod tests {
             Some((CounterId::Round, SoundSlot::Increment))
         );
         assert!(outcome.save);
+    }
+
+    #[test]
+    fn sound_priority_picks_the_sound_when_both_count() {
+        let mut t = tracker(14, 0);
+        t.sound_priority = CounterId::Global;
+        let outcome = t.handle(PLUS_BOTH, Instant::now());
+        assert_eq!(
+            outcome.sound,
+            Some((CounterId::Global, SoundSlot::Increment))
+        );
+        // La priorité ne joue que si les deux comptent : la session seule garde son son.
+        let only_round = Targets::only(CounterId::Round);
+        let outcome = t.handle(
+            Command::Count(only_round, CounterAction::Add(1)),
+            Instant::now(),
+        );
+        assert_eq!(
+            outcome.sound,
+            Some((CounterId::Round, SoundSlot::Increment))
+        );
     }
 
     #[test]

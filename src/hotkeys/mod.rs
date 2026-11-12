@@ -265,13 +265,10 @@ pub fn default_shortcuts() -> Vec<Shortcut> {
     vec![
         shortcut(&[], Key::NUMPAD_ADD, both(CounterAction::Add(1))),
         shortcut(&[], Key::NUMPAD_SUBTRACT, both(CounterAction::Subtract(1))),
+        // +5 / −5 : Maj + Num + / Maj + Num − (étape 11d).
+        shortcut(&[Key::SHIFT], Key::NUMPAD_ADD, both(CounterAction::Add(5))),
         shortcut(
-            &[Key::CONTROL],
-            Key::NUMPAD_ADD,
-            both(CounterAction::Add(5)),
-        ),
-        shortcut(
-            &[Key::CONTROL],
+            &[Key::SHIFT],
             Key::NUMPAD_SUBTRACT,
             both(CounterAction::Subtract(5)),
         ),

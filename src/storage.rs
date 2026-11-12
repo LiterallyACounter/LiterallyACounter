@@ -9,6 +9,7 @@
 //! - Fichier illisible (abîmé, modifié à la main de travers) : on le met de côté
 //!   (`state.json.corrupt`) au lieu de l'écraser, pour ne pas perdre la valeur.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::display::DisplayStyle;
 use crate::hotkeys::{self, MouseMethod, Shortcut};
+use crate::tracker::CounterId;
 
 const APP_FOLDER: &str = "LiterallyACounter";
 const STATE_FILE: &str = "state.json";
@@ -58,6 +60,15 @@ pub struct SavedState {
     pub volume: f32,
     /// Langue de l'interface, par son code (`None` : pas encore choisie, celle de Windows).
     pub language: Option<String>,
+    /// « La partie utilise les sons du global » (`None` : réglage d'avant l'étape 11, où la
+    /// copie de l'affichage copiait aussi les sons : on reprend alors `round_copies_global`).
+    pub round_copies_global_sounds: Option<bool>,
+    /// Sections repliées / dépliées de la configuration (seules celles modifiées y figurent).
+    pub open_sections: BTreeMap<String, bool>,
+    /// Muet général (gardé au redémarrage).
+    pub all_muted: bool,
+    /// Le compteur dont le son est joué quand les deux comptent (la session par défaut).
+    pub sound_priority: CounterId,
 }
 
 // Valeurs par défaut écrites à la main : les booléens doivent valoir `true` (le `derive`
@@ -78,6 +89,10 @@ impl Default for SavedState {
             audio_output: None,
             volume: 1.0,
             language: None,
+            round_copies_global_sounds: None,
+            open_sections: BTreeMap::new(),
+            all_muted: false,
+            sound_priority: CounterId::Round,
         }
     }
 }
@@ -221,6 +236,10 @@ mod tests {
         assert_eq!(state.audio_output, None);
         assert_eq!(state.volume, 1.0);
         assert_eq!(state.language, None);
+        assert_eq!(state.round_copies_global_sounds, None);
+        assert!(state.open_sections.is_empty());
+        assert!(!state.all_muted);
+        assert_eq!(state.sound_priority, CounterId::Round);
         let _ = fs::remove_dir_all(&dir);
     }
 
